@@ -2905,5 +2905,28 @@ gst_backend_mmap(struct v4l_gst_priv *dev_ops_priv, void *start, size_t length,
 unlock:
 	g_mutex_unlock(&priv->dev_lock);
 
+	DBG_LOG("Final map = %x\n", map);
+
 	return map;
+}
+int expbuf_ioctl(struct v4l_gst_priv *dev_ops_priv,
+		 struct v4l2_exportbuffer *expbuf) {
+	struct v4l_gst_buffer *buffer;
+	struct gst_backend_priv *priv = dev_ops_priv->gst_priv;
+	guint i;
+	if (expbuf->type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+		fprintf(stderr, "Can only export capture buffers as dmebuf\n");
+		errno = EINVAL;
+		return -1;
+	}
+	buffer = &priv->cap_buffers[expbuf->index];
+	for (i = 0; i < gst_buffer_n_memory(buffer->buffer); i++) {
+		GstMemory *mem;
+		mem = gst_buffer_peek_memory(buffer->buffer, i);
+		if (!gst_is_dmabuf_memory(mem))
+			continue;
+		expbuf->fd = gst_dmabuf_memory_get_fd (mem);
+		return 0;
+	}
+	return -1;
 }

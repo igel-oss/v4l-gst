@@ -154,6 +154,8 @@ static int plugin_ioctl(void *dev_ops_priv, int fd,
 	case VIDIOC_DQEVENT:
 		ret = dqevent_ioctl(priv, arg);
 		break;
+	case VIDIOC_EXPBUF:
+		ret = expbuf_ioctl(priv, arg);
 	default:
 		perror("unknown ioctl");
 		errno = ENOTTY;
