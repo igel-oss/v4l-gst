@@ -1850,7 +1850,6 @@ dqbuf_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_buffer *buf)
 {
 	struct gst_backend_priv *priv = dev_ops_priv->gst_priv;
 	int ret;
-	struct v4l_gst_buffer *buffer;
 
 	g_mutex_lock(&priv->dev_lock);
 
@@ -1861,7 +1860,6 @@ dqbuf_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_buffer *buf)
 			return ret;
 		}
 
-		buffer = &priv->out_buffers[buf->index];
 	} else if (buf->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
 		ret = dqbuf_ioctl_cap(priv, buf);
 		if (ret < 0) {
@@ -1869,16 +1867,8 @@ dqbuf_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_buffer *buf)
 			return ret;
 		}
 
-		buffer = &priv->cap_buffers[buf->index];
 	} else {
 		fprintf(stderr, "Invalid buf type\n");
-		errno = EINVAL;
-		g_mutex_unlock(&priv->dev_lock);
-		return -1;
-	}
-
-	if (!gst_buffer_map(buffer->buffer, &buffer->info, buffer->flags)) {
-		fprintf(stderr, "Failed to map buffer (%p)\n", buffer->buffer);
 		errno = EINVAL;
 		g_mutex_unlock(&priv->dev_lock);
 		return -1;
