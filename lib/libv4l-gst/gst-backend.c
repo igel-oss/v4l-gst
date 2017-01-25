@@ -142,6 +142,8 @@ static const struct v4l_gst_format_info v4l_gst_vid_fmt_tbl[] = {
 	{ V4L2_PIX_FMT_YUV411P, GST_VIDEO_FORMAT_Y41B },
 	{ V4L2_PIX_FMT_YUV422P, GST_VIDEO_FORMAT_Y42B },
 	{ V4L2_PIX_FMT_YVYU, GST_VIDEO_FORMAT_YVYU },
+	{ V4L2_PIX_FMT_RGB32, GST_VIDEO_FORMAT_ARGB },
+	{ V4L2_PIX_FMT_BGR32, GST_VIDEO_FORMAT_BGRA },
 #ifdef GST_14
 	{ V4L2_PIX_FMT_NV12MT, GST_VIDEO_FORMAT_NV12_64Z32 },
 #endif
@@ -510,7 +512,7 @@ get_supported_video_format_cap(GstElement *appsink, struct fmts **cap_fmts,
 	}
 
 	list_size = gst_value_list_get_size(val);
-	*cap_fmts = g_new0(struct fmts, list_size);
+	*cap_fmts = g_new0(struct fmts, list_size + 2);
 
 	for (i = 0, fmts_num = 0; i < list_size; i++) {
 		list_val = gst_value_list_get_value(val, i);
@@ -533,6 +535,15 @@ get_supported_video_format_cap(GstElement *appsink, struct fmts **cap_fmts,
 
 		(*cap_fmts)[fmts_num].fmt = fourcc;
 		(*cap_fmts)[fmts_num++].fmt_char = g_strdup(fmt_str);
+
+		/* Add legacy RGB formats */
+		if (fourcc == V4L2_PIX_FMT_ARGB32) {
+			(*cap_fmts)[fmts_num].fmt = V4L2_PIX_FMT_RGB32;
+			(*cap_fmts)[fmts_num++].fmt_char = g_strdup(fmt_str);
+		} else if (fourcc == V4L2_PIX_FMT_ABGR32) {
+			(*cap_fmts)[fmts_num].fmt = V4L2_PIX_FMT_BGR32;
+			(*cap_fmts)[fmts_num++].fmt_char = g_strdup(fmt_str);
+		}
 	}
 
 	*cap_fmts_num = fmts_num;
