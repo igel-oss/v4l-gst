@@ -23,15 +23,12 @@
 #include <stdint.h> /* uint32_t */
 #include <glib.h>
 
-struct event_state {
-	guint state;
-	GMutex lock;
-	int fd;
-};
+struct event_state;
 
 struct event_state * new_event_state();
 void delete_event_state(struct event_state *state);
 void set_event(struct event_state *state, int event);
 void clear_event(struct event_state *state, int event);
+int event_state_fd(struct event_state *state);
 
 #endif /* __EVFD_CTRL_H__ */

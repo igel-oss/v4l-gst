@@ -35,6 +35,12 @@
 #define SYS_WRITE(fd, buf, len) \
 	syscall(SYS_write, (int)(fd), (const void *)(buf), (size_t)(len));
 
+struct event_state {
+	guint state;
+	GMutex lock;
+	int fd;
+};
+
 struct event_state * new_event_state() {
 	struct event_state *state;
 	int efd;
@@ -51,7 +57,12 @@ struct event_state * new_event_state() {
 	return state;
 }
 
+int event_state_fd(struct event_state *state) {
+	return state->fd;
+}
+
 void delete_event_state(struct event_state *state) {
+	close(state->fd);
 	g_mutex_clear(&state->lock);
 	free(state);
 }
