@@ -717,7 +717,6 @@ pad_probe_query(GstPad *pad, GstPadProbeInfo *probe_info, gpointer user_data)
 					      info.size,
 					      priv->cap_buffers_num,
 					      priv->cap_buffers_num);
-		gst_object_unref(priv->sink_pool);
 	}
 
 	return GST_PAD_PROBE_OK;
