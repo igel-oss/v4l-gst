@@ -99,8 +99,6 @@ struct gst_backend_priv {
 #ifdef ENABLE_CHROMIUM_COMPAT
 	GstBuffer *pending_buffer;
 #endif
-	GstBuffer *preroll_buffer;
-
 	gulong probe_id;
 
 	GMutex cap_reqbuf_mutex;
@@ -737,20 +735,6 @@ setup_query_pad_probe(struct gst_backend_priv *priv)
 }
 
 static GstBuffer *
-pull_buffer_from_preroll(GstAppSink *appsink)
-{
-	GstSample *sample;
-	GstBuffer *buffer;
-
-	sample = gst_app_sink_pull_preroll(appsink);
-	buffer = gst_sample_get_buffer(sample);
-	gst_buffer_ref(buffer);
-	gst_sample_unref(sample);
-
-	return buffer;
-}
-
-static GstBuffer *
 pull_buffer_from_sample(GstAppSink *appsink)
 {
 	GstSample *sample;
@@ -762,23 +746,6 @@ pull_buffer_from_sample(GstAppSink *appsink)
 	gst_sample_unref(sample);
 
 	return buffer;
-}
-
-static GstFlowReturn
-appsink_callback_new_preroll(GstAppSink *appsink, gpointer user_data)
-{
-	struct gst_backend_priv *priv = user_data;
-
-	if (priv->preroll_buffer)
-		gst_buffer_unref(priv->preroll_buffer);
-
-	/* Keep reference to avoid freeing buffers in the sink buffer pool
-	   when inactivating it in streamoff ioctl. */
-	priv->preroll_buffer = pull_buffer_from_preroll(appsink);
-
-	DBG_LOG("hold preroll buffer\n");
-
-	return GST_FLOW_OK;
 }
 
 static GstFlowReturn
@@ -833,7 +800,6 @@ init_app_elements(struct gst_backend_priv *priv)
 	gst_app_src_set_max_bytes(GST_APP_SRC(priv->appsrc), 0);
 
 	priv->appsink_cb.new_sample = appsink_callback_new_sample;
-	priv->appsink_cb.new_preroll = appsink_callback_new_preroll;
 	gst_app_sink_set_callbacks(GST_APP_SINK(priv->appsink),
 				   &priv->appsink_cb, priv, NULL);
 
@@ -2138,19 +2104,15 @@ flush_pipeline(struct gst_backend_priv *priv)
 
 	DBG_LOG("flush start\n");
 
+	gst_buffer_pool_set_flushing(priv->src_pool, true);
+	gst_buffer_pool_set_flushing(priv->sink_pool, true);
+
 	event = gst_event_new_flush_start();
 	if (!gst_element_send_event(priv->pipeline, event)) {
 		fprintf(stderr, "Failed to send a flush start event\n");
 		errno = EINVAL;
 		return -1;
 	}
-
-	/* The GStreamer buffer pool frees all the buffers it owns
-	   when the state goes inactivate and the buffers are all unreffed.
-	   However this inactivation just flushes the buffer pool by
-	   keeping reference of a preroll buffer in libv4l-gst throughout
-	   the playback. */
-	gst_buffer_pool_set_active(priv->sink_pool, FALSE);
 
 	event = gst_event_new_flush_stop(TRUE);
 	if (!gst_element_send_event(priv->pipeline, event)) {
@@ -2159,7 +2121,8 @@ flush_pipeline(struct gst_backend_priv *priv)
 		return -1;
 	}
 
-	gst_buffer_pool_set_active(priv->sink_pool, TRUE);
+	gst_buffer_pool_set_flushing(priv->src_pool, false);
+	gst_buffer_pool_set_flushing(priv->sink_pool, false);
 
 	DBG_LOG("flush end\n");
 
@@ -2180,7 +2143,9 @@ streamoff_ioctl_out(struct gst_backend_priv *priv, gboolean steal_ref)
 	}
 	GST_OBJECT_UNLOCK(priv->pipeline);
 
+
 	ret = flush_pipeline(priv);
+
 	if (ret < 0)
 		return ret;
 
@@ -2503,11 +2468,6 @@ reqbuf_ioctl_cap(struct gst_backend_priv *priv,
 		}
 
 		g_atomic_int_set(&priv->is_cap_fmt_acquirable, 0);
-
-		if (priv->preroll_buffer) {
-			gst_buffer_unref(priv->preroll_buffer);
-			priv->preroll_buffer = NULL;
-		}
 
 		for (i = 0; i < priv->cap_buffers_num; i++) {
 			if (priv->cap_buffers[i].state ==
