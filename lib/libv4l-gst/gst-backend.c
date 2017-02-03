@@ -2035,7 +2035,7 @@ inactivate_pool:
 
 static GstFlowReturn
 force_dqbuf_from_pool(GstBufferPool *pool, struct v4l_gst_buffer *buffers,
-		      gint buffers_num)
+		      gint buffers_num, gboolean map)
 {
 	GstFlowReturn flow_ret;
 	GstBufferPoolAcquireParams params = { 0, };
@@ -2056,15 +2056,17 @@ force_dqbuf_from_pool(GstBufferPool *pool, struct v4l_gst_buffer *buffers,
 		return GST_FLOW_ERROR;
 	}
 
+	buffers[index].state = V4L_GST_BUFFER_DEQUEUED;
+
+	if (!map)
+		return GST_FLOW_OK;
+
 	if (!gst_buffer_map(buffer, &buffers[index].info,
 			    buffers[index].flags)) {
 		fprintf(stderr, "Failed to map buffer (%p)\n", buffer);
 		errno = EINVAL;
 		return GST_FLOW_ERROR;
 	}
-
-	buffers[index].state = V4L_GST_BUFFER_DEQUEUED;
-
 	return GST_FLOW_OK;
 }
 
@@ -2074,7 +2076,7 @@ force_out_dqbuf(struct gst_backend_priv *priv)
 	g_mutex_lock(&priv->queue_mutex);
 
 	while (force_dqbuf_from_pool(priv->src_pool, priv->out_buffers,
-				     priv->out_buffers_num) == GST_FLOW_OK) {
+			 priv->out_buffers_num, true) == GST_FLOW_OK) {
 		priv->returned_out_buffers_num--;
 	}
 
@@ -2106,7 +2108,7 @@ force_cap_dqbuf(struct gst_backend_priv *priv)
 			errno = EINVAL;
 			return -1;
 		}
-
+#if 0
 		if (!gst_buffer_map(buffer, &priv->cap_buffers[index].info,
 				    priv->cap_buffers[index].flags)) {
 			fprintf(stderr, "Failed to map buffer (%p)\n", buffer);
@@ -2114,6 +2116,7 @@ force_cap_dqbuf(struct gst_backend_priv *priv)
 			errno = EINVAL;
 			return -1;
 		}
+#endif
 
 		priv->cap_buffers[index].state = V4L_GST_BUFFER_DEQUEUED;
 
@@ -2125,7 +2128,7 @@ force_cap_dqbuf(struct gst_backend_priv *priv)
 	g_mutex_unlock(&priv->queue_mutex);
 
 	while (force_dqbuf_from_pool(priv->sink_pool, priv->cap_buffers,
-				     priv->cap_buffers_num) == GST_FLOW_OK);
+		     priv->cap_buffers_num, false) == GST_FLOW_OK);
 
 	return 0;
 }
