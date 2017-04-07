@@ -109,6 +109,8 @@ struct gst_backend_priv {
 	gboolean is_pipeline_started;
 
 	GMutex dev_lock;
+
+	GstBuffer *eos_buffer;
 };
 
 struct v4l_gst_format_info {
@@ -748,6 +750,14 @@ pull_buffer_from_sample(GstAppSink *appsink)
 	return buffer;
 }
 
+void
+appsink_callback_eos(GstAppSink *appsink, gpointer user_data)
+{
+	struct gst_backend_priv *priv = user_data;
+	if (priv->eos_buffer)
+		release_out_buffer(priv, priv->eos_buffer);
+}
+
 static GstFlowReturn
 appsink_callback_new_sample(GstAppSink *appsink, gpointer user_data)
 {
@@ -800,6 +810,8 @@ init_app_elements(struct gst_backend_priv *priv)
 	gst_app_src_set_max_bytes(GST_APP_SRC(priv->appsrc), 0);
 
 	priv->appsink_cb.new_sample = appsink_callback_new_sample;
+	priv->appsink_cb.eos = appsink_callback_eos;
+
 	gst_app_sink_set_callbacks(GST_APP_SINK(priv->appsink),
 				   &priv->appsink_cb, priv, NULL);
 
@@ -1401,7 +1413,7 @@ qbuf_ioctl_out(struct gst_backend_priv *priv, struct v4l2_buffer *buf)
 		memset(&buffer->info, 0, sizeof(buffer->info));
 
 		buffer->state = V4L_GST_BUFFER_QUEUED;
-		release_out_buffer(priv, buffer->buffer);
+		priv->eos_buffer = buffer->buffer;
 
 		return 0;
 	}
