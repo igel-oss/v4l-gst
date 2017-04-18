@@ -2934,6 +2934,7 @@ int expbuf_ioctl(struct v4l_gst_priv *dev_ops_priv,
 		 struct v4l2_exportbuffer *expbuf) {
 	struct v4l_gst_buffer *buffer;
 	struct gst_backend_priv *priv = dev_ops_priv->gst_priv;
+	guint plane = 0;
 	guint i;
 	if (expbuf->type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
 		fprintf(stderr, "Can only export capture buffers as dmebuf\n");
@@ -2946,6 +2947,10 @@ int expbuf_ioctl(struct v4l_gst_priv *dev_ops_priv,
 		mem = gst_buffer_peek_memory(buffer->buffer, i);
 		if (!gst_is_dmabuf_memory(mem))
 			continue;
+		if (plane != expbuf->plane) {
+			plane++;
+			continue;
+		}
 		expbuf->fd = gst_dmabuf_memory_get_fd (mem);
 		return 0;
 	}
