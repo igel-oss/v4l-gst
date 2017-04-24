@@ -34,8 +34,10 @@
 #define DEF_CAP_MIN_BUFFERS		2
 
 enum buffer_state {
+	V4L_GST_BUFFER_INIT = 0,
 	V4L_GST_BUFFER_QUEUED,
 	V4L_GST_BUFFER_DEQUEUED,
+	V4L_GST_BUFFER_READY_FOR_DEQUEUE,
 };
 
 struct v4l_gst_buffer {
@@ -85,10 +87,9 @@ struct gst_backend_priv {
 	gint out_buffers_num;
 	struct v4l_gst_buffer *cap_buffers;
 	gint cap_buffers_num;
+	gint confirmed_bufcount;
 
 	int64_t mmap_offset;
-
-	GQueue *reqbufs_queue;
 
 	GQueue *cap_buffers_queue;
 	GMutex queue_mutex;
@@ -149,6 +150,10 @@ static const struct v4l_gst_format_info v4l_gst_vid_fmt_tbl[] = {
 	{ V4L2_PIX_FMT_BGR32, GST_VIDEO_FORMAT_ARGB },
 	{ V4L2_PIX_FMT_NV12MT, GST_VIDEO_FORMAT_NV12_64Z32 },
 };
+
+static gboolean
+retrieve_cap_frame_info(GstBufferPool *pool, GstBuffer *buffer,
+			struct v4l2_pix_format_mplane *cap_pix_fmt);
 
 static gboolean
 parse_conf_settings(gchar **pipeline_str, gchar **pool_lib_path,
@@ -765,6 +770,24 @@ appsink_callback_eos(GstAppSink *appsink, gpointer user_data)
 		release_out_buffer(priv, priv->eos_buffer);
 }
 
+static guint
+get_v4l2_buffer_index(struct v4l_gst_buffer *buffers, gint buffers_num,
+		      GstBuffer *buffer)
+{
+	gint i;
+	guint index = G_MAXUINT;
+
+	for (i = 0; i < buffers_num; i++) {
+		if (buffers[i].buffer == buffer) {
+			index = i;
+			break;
+		}
+	}
+
+	return index;
+}
+
+
 static GstFlowReturn
 appsink_callback_new_sample(GstAppSink *appsink, gpointer user_data)
 {
@@ -772,17 +795,78 @@ appsink_callback_new_sample(GstAppSink *appsink, gpointer user_data)
 	GstBuffer *buffer;
 	gboolean is_empty;
 	GQueue *queue;
+	guint index;
 
 	buffer = pull_buffer_from_sample(appsink);
 
 	DBG_LOG("pull buffer: %p\n", buffer);
 
-	if (priv->cap_buffers)
-		queue = priv->cap_buffers_queue;
-	else
-		queue = priv->reqbufs_queue;
+	//TODO: Check on locking and error conditions. Need to wake up reqbufs thread on error.
 
 	g_mutex_lock(&priv->queue_mutex);
+
+	if (!priv->cap_buffers) {
+		if (!buffer->pool) {
+			fprintf(stderr,
+				"Cannot handle buffers not belonging to "
+				"a bufferpool\n");
+			return GST_FLOW_ERROR;
+		}
+
+		if (priv->sink_pool != buffer->pool) {
+			DBG_LOG("The buffer pool we prepared is not used by "
+				"the pipeline, so replace it with the pool that is "
+				"actually used\n");
+			gst_object_unref(priv->sink_pool);
+			priv->sink_pool = gst_object_ref(buffer->pool);
+		}
+
+		/* Confirm the number of buffers actually set to the buffer pool. */
+		get_buffer_pool_params(priv->sink_pool, NULL, NULL, NULL,
+			       &priv->cap_buffers_num);
+		if (priv->cap_buffers_num == 0) {
+			fprintf(stderr,
+				"Cannot handle the unlimited amount of buffers\n");
+			return GST_FLOW_ERROR;
+		}
+		if (!retrieve_cap_frame_info(priv->sink_pool, buffer,
+				     &priv->cap_pix_fmt)) {
+			fprintf(stderr, "Failed to retrieve frame info on CAPTURE\n");
+			return GST_FLOW_ERROR;
+		}
+		priv->cap_buffers = g_new0(struct v4l_gst_buffer, priv->cap_buffers_num);
+	}
+
+	index = get_v4l2_buffer_index(priv->cap_buffers, priv->confirmed_bufcount,
+			buffer);
+
+	if (index >= priv->cap_buffers_num) {
+		int j;
+		struct v4l_gst_buffer *buf;
+		if (priv->confirmed_bufcount >= priv->cap_buffers_num) {
+			fprintf(stderr, "Unknown buffer received from pipline\n");
+			g_mutex_unlock(&priv->queue_mutex);
+			return GST_FLOW_ERROR;
+		}
+		buf = &(priv->cap_buffers[priv->confirmed_bufcount++]);
+		buf->buffer = buffer;
+		buf->state = V4L_GST_BUFFER_READY_FOR_DEQUEUE;
+		for (j = 0; j < priv->cap_pix_fmt.num_planes; j++) {
+			buf->planes[j].length =
+					priv->cap_pix_fmt.plane_fmt[j].sizeimage;
+		}
+		g_cond_signal(&priv->queue_cond);
+		g_mutex_unlock(&priv->queue_mutex);
+		return GST_FLOW_OK;
+	}
+
+	if (priv->cap_buffers[index].state == V4L_GST_BUFFER_INIT) {
+		priv->cap_buffers[index].state = V4L_GST_BUFFER_READY_FOR_DEQUEUE;
+		g_mutex_unlock(&priv->queue_mutex);
+		return GST_FLOW_OK;
+	}
+
+	queue = priv->cap_buffers_queue;
 
 	is_empty = g_queue_is_empty(queue);
 	g_queue_push_tail(queue, buffer);
@@ -790,8 +874,6 @@ appsink_callback_new_sample(GstAppSink *appsink, gpointer user_data)
 	if (is_empty) {
 		g_cond_signal(&priv->queue_cond);
 		set_event(priv->dev_ops_priv->event_state, POLLOUT);
-	} else if (!priv->cap_buffers) {
-		g_cond_signal(&priv->queue_cond);
 	}
 
 	g_mutex_unlock(&priv->queue_mutex);
@@ -824,7 +906,6 @@ init_app_elements(struct gst_backend_priv *priv)
 
 	/* For queuing buffers received from appsink */
 	priv->cap_buffers_queue = g_queue_new();
-	priv->reqbufs_queue = g_queue_new();
 	g_mutex_init(&priv->queue_mutex);
 	g_cond_init(&priv->queue_cond);
 
@@ -925,7 +1006,6 @@ gst_backend_init(struct v4l_gst_priv *dev_ops_priv)
 	/* error cases */
 free_app_elems_init_objs:
 	g_queue_free(priv->cap_buffers_queue);
-	g_queue_free(priv->reqbufs_queue);
 	g_mutex_clear(&priv->queue_mutex);
 	g_cond_clear(&priv->queue_cond);
 
@@ -982,7 +1062,6 @@ gst_backend_deinit(struct v4l_gst_priv *dev_ops_priv)
 	g_free(priv->cap_fmts);
 
 	g_queue_free(priv->cap_buffers_queue);
-	g_queue_free(priv->reqbufs_queue);
 	g_mutex_clear(&priv->queue_mutex);
 	g_cond_clear(&priv->queue_cond);
 
@@ -1535,31 +1614,6 @@ qbuf_ioctl_out(struct gst_backend_priv *priv, struct v4l2_buffer *buf)
 	return 0;
 }
 
-static gboolean
-push_to_cap_buffers_queue(struct gst_backend_priv *priv, GstBuffer *buffer)
-{
-	gboolean is_empty;
-	gint index;
-
-	index = g_queue_index(priv->reqbufs_queue, buffer);
-	if (index < 0)
-		return FALSE;
-
-	g_mutex_lock(&priv->queue_mutex);
-
-	is_empty = g_queue_is_empty(priv->cap_buffers_queue);
-	g_queue_push_tail(priv->cap_buffers_queue, buffer);
-
-	if (is_empty)
-		g_cond_signal(&priv->queue_cond);
-
-	g_mutex_unlock(&priv->queue_mutex);
-
-	g_queue_pop_nth_link(priv->reqbufs_queue, index);
-
-	return TRUE;
-}
-
 static int
 qbuf_ioctl_cap(struct gst_backend_priv *priv, struct v4l2_buffer *buf)
 {
@@ -1580,22 +1634,22 @@ qbuf_ioctl_cap(struct gst_backend_priv *priv, struct v4l2_buffer *buf)
 	gst_buffer_unmap(buffer->buffer, &buffer->info);
 	memset(&buffer->info, 0, sizeof(buffer->info));
 
-	/* The buffers in reqbufs_queue, which are pushed by the REQBUF ioctl
-	   on CAPTURE, have already contained decoded frames.
-	   They should not back to the buffer pool and prepare to be
-	   dequeued as they are. */
-	if (g_queue_get_length(priv->reqbufs_queue) > 0) {
-		DBG_LOG("push_to_cap_buffers_queue index=%d\n", buf->index);
-		if (push_to_cap_buffers_queue(priv, buffer->buffer)) {
-			buffer->state =V4L_GST_BUFFER_QUEUED;
-			return 0;
-		}
+	if (buffer->state == V4L_GST_BUFFER_READY_FOR_DEQUEUE) {
+		g_mutex_lock(&priv->queue_mutex);
+		buffer->state = V4L_GST_BUFFER_QUEUED;
+		g_queue_push_tail(priv->cap_buffers_queue, buffer->buffer);
+		if (g_queue_get_length(priv->cap_buffers_queue) == 1)
+			g_cond_signal(&priv->queue_cond);
+		g_mutex_unlock(&priv->queue_mutex);
+		return 0;
 	}
 
-	DBG_LOG("unref buffer: %p, index=%d\n", buffer->buffer, buf->index);
-	buffer->state = V4L_GST_BUFFER_QUEUED;
+	if (buffer->state == V4L_GST_BUFFER_DEQUEUED) {
+		DBG_LOG("unref buffer: %p, index=%d\n", buffer->buffer, buf->index);
+		gst_buffer_unref(buffer->buffer);
+	}
 
-	gst_buffer_unref(buffer->buffer);
+	buffer->state = V4L_GST_BUFFER_QUEUED;
 
 	return 0;
 }
@@ -1689,22 +1743,6 @@ fill_v4l2_buffer(struct gst_backend_priv *priv, GstBufferPool *pool,
 	return 0;
 }
 
-static guint
-get_v4l2_buffer_index(struct v4l_gst_buffer *buffers, gint buffers_num,
-		      GstBuffer *buffer)
-{
-	gint i;
-	guint index = G_MAXUINT;
-
-	for (i = 0; i < buffers_num; i++) {
-		if (buffers[i].buffer == buffer) {
-			index = i;
-			break;
-		}
-	}
-
-	return index;
-}
 
 static GstBuffer *
 dequeue_blocking(struct gst_backend_priv *priv, GQueue *queue, GCond *cond)
@@ -2137,33 +2175,19 @@ static int
 force_cap_dqbuf(struct gst_backend_priv *priv)
 {
 	GstBuffer *buffer;
-	guint index;
 
 	g_mutex_lock(&priv->queue_mutex);
 
-	buffer = dequeue_non_blocking(priv->cap_buffers_queue);
-	while (buffer) {
-		index = get_v4l2_buffer_index(priv->cap_buffers,
-					      priv->cap_buffers_num, buffer);
-		if (index >= priv->cap_buffers_num) {
-			fprintf(stderr, "Failed to get a valid buffer index "
-				"on CAPTURE\n");
-			g_mutex_unlock(&priv->queue_mutex);
-			errno = EINVAL;
-			return -1;
-		}
-
-		priv->cap_buffers[index].state = V4L_GST_BUFFER_DEQUEUED;
-
-		buffer = dequeue_non_blocking(priv->cap_buffers_queue);
-	}
-
 	clear_event(priv->dev_ops_priv->event_state, POLLOUT);
 
-	g_mutex_unlock(&priv->queue_mutex);
-
 	while (force_dqbuf_from_pool(priv->sink_pool, priv->cap_buffers,
-		     priv->cap_buffers_num, false) == GST_FLOW_OK);
+			 priv->cap_buffers_num, false) == GST_FLOW_OK) {
+	}
+
+	while ((buffer = g_queue_pop_head(priv->cap_buffers_queue)))
+		;
+
+	g_mutex_unlock(&priv->queue_mutex);
 
 	return 0;
 }
@@ -2359,33 +2383,6 @@ unlock:
 	return ret;
 }
 
-static GstBuffer *
-peek_first_cap_buffer(struct gst_backend_priv *priv)
-{
-	GstBuffer *buffer;
-
-	g_mutex_lock(&priv->queue_mutex);
-	buffer = g_queue_peek_head(priv->reqbufs_queue);
-	while (!buffer) {
-		g_cond_wait(&priv->queue_cond, &priv->queue_mutex);
-		buffer = g_queue_peek_head(priv->reqbufs_queue);
-	}
-	g_mutex_unlock(&priv->queue_mutex);
-
-	return buffer;
-}
-
-static void
-wait_for_all_bufs_collected(struct gst_backend_priv *priv,
-			    guint max_buffers)
-{
-	g_mutex_lock(&priv->queue_mutex);
-	while (g_queue_get_length(priv->reqbufs_queue) <
-	       max_buffers)
-		g_cond_wait(&priv->queue_cond, &priv->queue_mutex);
-	g_mutex_unlock(&priv->queue_mutex);
-}
-
 static gboolean
 retrieve_cap_frame_info(GstBufferPool *pool, GstBuffer *buffer,
 			struct v4l2_pix_format_mplane *cap_pix_fmt)
@@ -2409,96 +2406,28 @@ retrieve_cap_frame_info(GstBufferPool *pool, GstBuffer *buffer,
 }
 
 static guint
-create_cap_buffers_list(struct gst_backend_priv *priv)
+confirm_cap_buffer_count(struct gst_backend_priv *priv)
 {
-	GstBuffer *first_buffer;
-	guint actual_max_buffers;
-	gint i, j;
-
 	if (priv->cap_buffers)
 		/* Cannot realloc the buffers without stopping the pipeline,
 		   so return the same number of the buffers so far. */
 		return priv->cap_buffers_num;
 
-	g_mutex_unlock(&priv->dev_lock);
-
-	first_buffer = peek_first_cap_buffer(priv);
-
-	g_mutex_lock(&priv->dev_lock);
-
-	if (!first_buffer->pool) {
-		fprintf(stderr,
-			"Cannot handle buffers not belonging to "
-			"a bufferpool\n");
-		errno = EINVAL;
-		return 0;
-	}
-
-	if (priv->sink_pool != first_buffer->pool) {
-		DBG_LOG("The buffer pool we prepared is not used by "
-			"the pipeline, so replace it with the pool that is "
-			"actually used\n");
-		gst_object_unref(priv->sink_pool);
-		priv->sink_pool = gst_object_ref(first_buffer->pool);
-	}
-
-	/* Confirm the number of buffers actually set to the buffer pool. */
-	get_buffer_pool_params(priv->sink_pool, NULL, NULL, NULL,
-			       &actual_max_buffers);
-	if (actual_max_buffers == 0) {
-		fprintf(stderr,
-			"Cannot handle the unlimited amount of buffers\n");
-		errno = EINVAL;
-		return 0;
-	}
-
-	if (!retrieve_cap_frame_info(priv->sink_pool, first_buffer,
-				     &priv->cap_pix_fmt)) {
-		fprintf(stderr, "Failed to retrieve frame info on CAPTURE\n");
-		errno = EINVAL;
-		return 0;
-	}
 
 	g_mutex_unlock(&priv->dev_lock);
 
-	/* We wait for buffers from appsink to be collected for
-	   the maximum number of the buffer pool. */
-	wait_for_all_bufs_collected(priv, actual_max_buffers);
+	/* Wait for the first buffer to come out of the pipeline to
+           check the bufferpool properties */
+	g_mutex_lock(&priv->queue_mutex);
+	while (!priv->cap_buffers)
+		g_cond_wait(&priv->queue_cond, &priv->queue_mutex);
+	g_mutex_unlock(&priv->queue_mutex);
 
 	g_mutex_lock(&priv->dev_lock);
-
-	priv->cap_buffers = g_new0(struct v4l_gst_buffer, actual_max_buffers);
-
-	for (i = 0; i < actual_max_buffers; i++) {
-		priv->cap_buffers[i].buffer =
-				g_queue_peek_nth(priv->reqbufs_queue, i);
-
-		/* Set identifiers for associating a GstBuffer with
-		   a V4L2 buffer in the V4L2 caller side. */
-		priv->mmap_offset =
-				set_mem_offset(&priv->cap_buffers[i],
-				priv->sink_pool,
-				priv->mmap_offset);
-
-		priv->cap_buffers[i].state = V4L_GST_BUFFER_DEQUEUED;
-
-		/* assume that decoded image data has been filled to
-		   the entire plane size, because the GStreamer buffer
-		   information does not provides how much valid data size
-		   a GstBuffer has. */
-		for (j = 0; j < priv->cap_pix_fmt.num_planes; j++) {
-			priv->cap_buffers[i].planes[j].length =
-					priv->cap_pix_fmt.plane_fmt[j].sizeimage;
-		}
-
-		DBG_LOG("cap gst_buffer[%d] : %p\n", i,
-			priv->cap_buffers[i].buffer);
-	}
-
 	DBG_LOG("The number of buffers actually set to the buffer pool is %d\n",
-		actual_max_buffers);
+		priv->cap_buffers_num);
 
-	return actual_max_buffers;
+	return priv->cap_buffers_num;
 }
 
 static int
@@ -2547,7 +2476,6 @@ reqbuf_ioctl_cap(struct gst_backend_priv *priv,
 			}
 		}
 
-		g_queue_clear(priv->reqbufs_queue);
 		g_queue_clear(priv->cap_buffers_queue);
 
 		g_mutex_lock(&priv->queue_mutex);
@@ -2580,13 +2508,13 @@ reqbuf_ioctl_cap(struct gst_backend_priv *priv,
 	g_cond_signal(&priv->cap_reqbuf_cond);
 	g_mutex_unlock(&priv->cap_reqbuf_mutex);
 
-	buffers_num = create_cap_buffers_list(priv);
+	buffers_num = confirm_cap_buffer_count(priv);
 	if (buffers_num == 0) {
 		ret = -1;
 		goto unlock;
 	}
 
-	req->count = priv->cap_buffers_num = buffers_num;
+	req->count = buffers_num;
 
 	DBG_LOG("buffers count=%d\n", req->count);
 
@@ -2941,7 +2869,13 @@ int expbuf_ioctl(struct v4l_gst_priv *dev_ops_priv,
 		errno = EINVAL;
 		return -1;
 	}
+
+	g_mutex_lock(&priv->queue_mutex);
 	buffer = &priv->cap_buffers[expbuf->index];
+	while (buffer->state != V4L_GST_BUFFER_READY_FOR_DEQUEUE)
+		g_cond_wait(&priv->queue_cond, &priv->queue_mutex);
+	g_mutex_unlock(&priv->queue_mutex);
+
 	for (i = 0; i < gst_buffer_n_memory(buffer->buffer); i++) {
 		GstMemory *mem;
 		mem = gst_buffer_peek_memory(buffer->buffer, i);
