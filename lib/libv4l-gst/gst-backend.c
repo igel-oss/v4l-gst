@@ -2084,15 +2084,6 @@ force_cap_dqbuf(struct gst_backend_priv *priv)
 			errno = EINVAL;
 			return -1;
 		}
-#if 0
-		if (!gst_buffer_map(buffer, &priv->cap_buffers[index].info,
-				    priv->cap_buffers[index].flags)) {
-			fprintf(stderr, "Failed to map buffer (%p)\n", buffer);
-			g_mutex_unlock(&priv->queue_mutex);
-			errno = EINVAL;
-			return -1;
-		}
-#endif
 
 		priv->cap_buffers[index].state = V4L_GST_BUFFER_DEQUEUED;
 
