@@ -20,6 +20,7 @@
 #define __V4L_GST_H__
 
 #include <stdbool.h>
+#include "evfd-ctrl.h"
 
 struct v4l_gst_priv {
 	int plugin_fd;

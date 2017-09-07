@@ -28,9 +28,8 @@ AC_PROG_MKDIR_P
 
 AC_CHECK_HEADER([libv4l-plugin.h], [], AC_MSG_ERROR([libv4l-plugin.h is needed]))
 PKG_PROG_PKG_CONFIG
-PKG_CHECK_MODULES(GST, gstreamer-video-1.0 >= 1.4 gstreamer-app-1.0,
-	[AC_DEFINE([GST_14], [1], [Gstreamer version 1.4])],
-	[PKG_CHECK_MODULES(GST, gstreamer-video-1.0 gstreamer-app-1.0)])
+PKG_CHECK_MODULES(GST, gstreamer-video-1.0 >= 1.4 gstreamer-app-1.0
+		gstreamer-allocators-1.0)
 
 AC_ARG_WITH(libv4l2subdir,
         AS_HELP_STRING([--with-libv4l2subdir=DIR], [set libv4l2 library subdir (default=libv4l)]),

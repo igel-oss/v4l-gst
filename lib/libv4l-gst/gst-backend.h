@@ -24,6 +24,7 @@
 #include <gst/video/video.h>
 #include <gst/app/gstappsrc.h>
 #include <gst/app/gstappsink.h>
+#include <gst/allocators/gstdmabuf.h>
 
 #include "libv4l-gst.h"
 
@@ -42,6 +43,7 @@ int streamon_ioctl(struct v4l_gst_priv *dev_ops_priv, enum v4l2_buf_type *type);
 int streamoff_ioctl(struct v4l_gst_priv *dev_ops_priv, enum v4l2_buf_type *type);
 int subscribe_event_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_event_subscription *sub);
 int dqevent_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_event *ev);
+int expbuf_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_exportbuffer *buf);
 void * gst_backend_mmap(struct v4l_gst_priv *dev_ops_priv, void *start, size_t length, int prot, int flags, int fd, int64_t offset);
 
 #endif /* __GST_BACKEND_H__ */

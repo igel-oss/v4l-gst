@@ -66,15 +66,12 @@ static void *plugin_init(int fd)
 	if (!priv->event_state)
 		goto free_priv;
 
-	if (dup2(priv->event_state->fd, fd) < 0) {
+	if (dup2(event_state_fd(priv->event_state), fd) < 0) {
 		fprintf(stderr, "dup2 failed\n");
-		close(priv->event_state->fd);
 		goto free_event;
 	}
-	close(priv->event_state->fd);
 
 	priv->plugin_fd = fd;
-	priv->event_state->fd = fd;
 
 	ret = gst_backend_init(priv);
 	if (ret < 0)
@@ -154,6 +151,8 @@ static int plugin_ioctl(void *dev_ops_priv, int fd,
 	case VIDIOC_DQEVENT:
 		ret = dqevent_ioctl(priv, arg);
 		break;
+	case VIDIOC_EXPBUF:
+		ret = expbuf_ioctl(priv, arg);
 	default:
 		perror("unknown ioctl");
 		errno = ENOTTY;

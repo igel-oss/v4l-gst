@@ -20,6 +20,7 @@
 #include <poll.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <sys/epoll.h>
 
 #include "evfd-ctrl.h"
 #include "debug.h"
@@ -35,23 +36,55 @@
 #define SYS_WRITE(fd, buf, len) \
 	syscall(SYS_write, (int)(fd), (const void *)(buf), (size_t)(len));
 
+struct event_state {
+	guint state;
+	GMutex lock;
+	int fd;
+	int epfd;
+};
+
 struct event_state * new_event_state() {
-	struct event_state *state;
+	struct event_state *state = NULL;
 	int efd;
+	int epollfd;
+	struct epoll_event ev = {
+		.events = EPOLLIN,
+	};
 	efd = eventfd(0, EFD_NONBLOCK);
+
 	if (efd < 0)
-	{
-		fprintf(stderr, "eventfd failed\n");
-		return NULL;
-	}
+		goto out;
+
+	epollfd = epoll_create(1);
+	if (epollfd < 0)
+		goto out_with_efd;
+
+	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, efd, &ev))
+		goto out_with_pfd;
+
 	state = calloc (1, sizeof (struct event_state));
 
 	g_mutex_init(&state->lock);
 	state->fd = efd;
+	state->epfd = epollfd;
 	return state;
+
+out_with_pfd:
+	close(epollfd);
+out_with_efd:
+	close(efd);
+out:
+	fprintf(stderr, "event state init failed\n");
+	return NULL;
+}
+
+int event_state_fd(struct event_state *state) {
+	return state->epfd;
 }
 
 void delete_event_state(struct event_state *state) {
+	close(state->epfd);
+	close(state->fd);
 	g_mutex_clear(&state->lock);
 	free(state);
 }
