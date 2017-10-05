@@ -111,6 +111,9 @@ struct gst_backend_priv {
 	GMutex dev_lock;
 
 	GstBuffer *eos_buffer;
+
+	gint max_width;
+	gint max_height;
 };
 
 struct v4l_gst_format_info {
@@ -149,7 +152,7 @@ static const struct v4l_gst_format_info v4l_gst_vid_fmt_tbl[] = {
 
 static gboolean
 parse_conf_settings(gchar **pipeline_str, gchar **pool_lib_path,
-		    gint *min_buffers)
+		    gint *min_buffers, gint *max_width, gint *max_height)
 {
 	const gchar *const *sys_conf_dirs;
 	GKeyFile *conf_key;
@@ -210,6 +213,10 @@ parse_conf_settings(gchar **pipeline_str, gchar **pool_lib_path,
 			"for the GStreamer pipeline to work : %d\n",
 			*min_buffers);
 
+                *max_width = g_key_file_get_integer(conf_key, groups[i],
+                                                      "max-width", NULL);
+                *max_height = g_key_file_get_integer(conf_key, groups[i],
+                                                      "max-height", NULL);
 		break;
 	}
 
@@ -890,7 +897,9 @@ gst_backend_init(struct v4l_gst_priv *dev_ops_priv)
 	priv->dev_ops_priv = dev_ops_priv;
 
 	if (!parse_conf_settings(&pipeline_str, &pool_lib_path,
-				 &priv->cap_min_buffers))
+				 &priv->cap_min_buffers,
+				 &priv->max_width,
+				 &priv->max_height))
 		goto free_priv;
 
 	priv->pipeline = create_pipeline(pipeline_str);
@@ -1242,6 +1251,8 @@ enum_fmt_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_fmtdesc *desc)
 }
 int
 enum_framesizes_ioctl (struct v4l_gst_priv *dev_ops_priv, struct v4l2_frmsizeenum *argp) {
+	struct gst_backend_priv *priv = dev_ops_priv->gst_priv;
+
 	switch (argp->pixel_format) {
         case V4L2_PIX_FMT_GREY:
         case V4L2_PIX_FMT_RGB565:
@@ -1290,8 +1301,10 @@ enum_framesizes_ioctl (struct v4l_gst_priv *dev_ops_priv, struct v4l2_frmsizeenu
 	}
 	argp->stepwise.min_width = 16;
 	argp->stepwise.min_height = 16;
-	argp->stepwise.max_width = 3840;
-	argp->stepwise.max_height = 2160;
+	argp->stepwise.max_width = priv->max_width ?
+		priv->max_width : 1920;
+	argp->stepwise.max_height = priv->max_height ?
+		priv->max_height : 1088;
 
 	return 0;
 }
