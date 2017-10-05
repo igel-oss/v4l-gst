@@ -153,6 +153,7 @@ static int plugin_ioctl(void *dev_ops_priv, int fd,
 		break;
 	case VIDIOC_EXPBUF:
 		ret = expbuf_ioctl(priv, arg);
+		break;
 	default:
 		perror("unknown ioctl");
 		errno = ENOTTY;
