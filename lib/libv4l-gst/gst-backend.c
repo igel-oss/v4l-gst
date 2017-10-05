@@ -1240,6 +1240,61 @@ enum_fmt_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_fmtdesc *desc)
 
 	return 0;
 }
+int
+enum_framesizes_ioctl (struct v4l_gst_priv *dev_ops_priv, struct v4l2_frmsizeenum *argp) {
+	switch (argp->pixel_format) {
+        case V4L2_PIX_FMT_GREY:
+        case V4L2_PIX_FMT_RGB565:
+        case V4L2_PIX_FMT_RGB24:
+        case V4L2_PIX_FMT_BGR24:
+        case V4L2_PIX_FMT_ABGR32:
+        case V4L2_PIX_FMT_XBGR32:
+        case V4L2_PIX_FMT_ARGB32:
+        case V4L2_PIX_FMT_XRGB32:
+        case V4L2_PIX_FMT_RGB32:
+        case V4L2_PIX_FMT_BGR32:
+        case V4L2_PIX_FMT_H264:
+		argp->type = V4L2_FRMSIZE_TYPE_CONTINUOUS;
+		argp->stepwise.step_width = 1;
+		argp->stepwise.step_height = 1;
+		break;
+        case V4L2_PIX_FMT_NV12:
+        case V4L2_PIX_FMT_NV21:
+        case V4L2_PIX_FMT_YUV420:
+        case V4L2_PIX_FMT_YVU420:
+        case V4L2_PIX_FMT_NV12MT:
+		argp->type = V4L2_FRMSIZE_TYPE_STEPWISE;
+		argp->stepwise.step_width = 2;
+		argp->stepwise.step_height = 2;
+		break;
+        case V4L2_PIX_FMT_NV16:
+        case V4L2_PIX_FMT_YUYV:
+        case V4L2_PIX_FMT_UYVY:
+        case V4L2_PIX_FMT_YVYU:
+        case V4L2_PIX_FMT_YUV422P:
+		argp->type = V4L2_FRMSIZE_TYPE_STEPWISE;
+		argp->stepwise.step_width = 2;
+		argp->stepwise.step_height = 1;
+		break;
+        case V4L2_PIX_FMT_YVU410:
+        case V4L2_PIX_FMT_YUV410:
+		argp->type = V4L2_FRMSIZE_TYPE_STEPWISE;
+		argp->stepwise.step_width = 4;
+		argp->stepwise.step_height = 4;
+		break;
+        case V4L2_PIX_FMT_YUV411P:
+		argp->type = V4L2_FRMSIZE_TYPE_STEPWISE;
+		argp->stepwise.step_width = 4;
+		argp->stepwise.step_height = 1;
+		break;
+	}
+	argp->stepwise.min_width = 16;
+	argp->stepwise.min_height = 16;
+	argp->stepwise.max_width = 3840;
+	argp->stepwise.max_height = 2160;
+
+	return 0;
+}
 
 int
 get_ctrl_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_control *ctrl)

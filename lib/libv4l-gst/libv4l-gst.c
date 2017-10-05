@@ -154,6 +154,9 @@ static int plugin_ioctl(void *dev_ops_priv, int fd,
 	case VIDIOC_EXPBUF:
 		ret = expbuf_ioctl(priv, arg);
 		break;
+	case VIDIOC_ENUM_FRAMESIZES :
+		ret = enum_framesizes_ioctl(priv, arg);
+		break;
 	default:
 		perror("unknown ioctl");
 		errno = ENOTTY;

@@ -34,6 +34,7 @@ int querycap_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_capability *ca
 int set_fmt_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_format *fmt);
 int get_fmt_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_format *fmt);
 int enum_fmt_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_fmtdesc *desc);
+int enum_framesizes_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_frmsizeenum *argp);
 int get_ctrl_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_control *ctrl);
 int qbuf_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_buffer *buf);
 int dqbuf_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_buffer *buf);
