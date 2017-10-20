@@ -24,9 +24,20 @@ $ ./configure
 
 Configuration
 =============
+The setting file location is `/etc/xdg/libv4l-gst.conf`
 
-Create the settings file ```/etc/xdg/libv4l-gst.conf```. The following settings are for the 
-Renesas Porter board, but they may be updated to use more generic settings.
+### Settings
+
+**pipeline**: The GStreamer pipeline to be used.  Should include everything but the input and output nodes  
+**max-width**: The maximum width of the video that can be decoded through the plugin (default: 1920)  
+**max-height**: The maximum width of the video that can be decoded through the plugin (default: 1080)   
+**bufferpool-library**: Path to the library that provides buffer pools for input and output nodes  
+**min-buffers**: The minimum number of buffers for each of the above buffer pools  
+
+### Example
+The following settings are for the Renesas Porter board,
+but they may be updated to use more generic settings.
+
 
 ```
 [libv4l-gst]
