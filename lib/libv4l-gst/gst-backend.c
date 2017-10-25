@@ -38,6 +38,7 @@ enum buffer_state {
 	V4L_GST_BUFFER_QUEUED,
 	V4L_GST_BUFFER_DEQUEUED,
 	V4L_GST_BUFFER_READY_FOR_DEQUEUE,
+	V4L_GST_BUFFER_PREROLLED,
 };
 
 struct v4l_gst_buffer {
@@ -749,12 +750,10 @@ setup_query_pad_probe(struct gst_backend_priv *priv)
 }
 
 static GstBuffer *
-pull_buffer_from_sample(GstAppSink *appsink)
+get_buffer_from_sample(GstSample *sample)
 {
-	GstSample *sample;
 	GstBuffer *buffer;
 
-	sample = gst_app_sink_pull_sample(appsink);
 	buffer = gst_sample_get_buffer(sample);
 	gst_buffer_ref(buffer);
 	gst_sample_unref(sample);
@@ -787,17 +786,69 @@ get_v4l2_buffer_index(struct v4l_gst_buffer *buffers, gint buffers_num,
 	return index;
 }
 
+static GstFlowReturn
+appsink_callback_preroll(GstAppSink *appsink, gpointer user_data)
+{
+	struct gst_backend_priv *priv = user_data;
+	GstSample *sample;
+	GstBuffer *buffer;
+	guint preroll_idx;
+	sample = gst_app_sink_pull_preroll(appsink);
+	buffer = get_buffer_from_sample(sample);
+	if (!buffer->pool) {
+		fprintf(stderr,
+			"Cannot handle buffers not belonging to "
+			"a bufferpool\n");
+		return GST_FLOW_ERROR;
+	}
+
+	if (priv->sink_pool != buffer->pool) {
+		DBG_LOG("The buffer pool we prepared is not used by "
+			"the pipeline, so replace it with the pool that is "
+			"actually used\n");
+		gst_object_unref(priv->sink_pool);
+		priv->sink_pool = gst_object_ref(buffer->pool);
+	}
+
+	/* Confirm the number of buffers actually set to the buffer pool. */
+	get_buffer_pool_params(priv->sink_pool, NULL, NULL, NULL,
+		       &priv->cap_buffers_num);
+	if (priv->cap_buffers_num == 0) {
+		fprintf(stderr,
+			"Cannot handle the unlimited amount of buffers\n");
+		return GST_FLOW_ERROR;
+	}
+	if (!retrieve_cap_frame_info(priv->sink_pool, buffer,
+			     &priv->cap_pix_fmt)) {
+		fprintf(stderr, "Failed to retrieve frame info on CAPTURE\n");
+		return GST_FLOW_ERROR;
+	}
+	if (!priv->cap_buffers)
+		priv->cap_buffers = g_new0(struct v4l_gst_buffer, priv->cap_buffers_num);
+
+	preroll_idx = priv->cap_buffers_num - 1;
+	priv->cap_buffers[preroll_idx].buffer = buffer;
+	priv->cap_buffers[preroll_idx].state = V4L_GST_BUFFER_PREROLLED;
+	gst_buffer_unref(buffer);
+	return GST_FLOW_OK;
+}
 
 static GstFlowReturn
 appsink_callback_new_sample(GstAppSink *appsink, gpointer user_data)
 {
 	struct gst_backend_priv *priv = user_data;
 	GstBuffer *buffer;
+	GstSample *sample;
 	gboolean is_empty;
 	GQueue *queue;
 	guint index;
+	guint preroll_idx;
 
-	buffer = pull_buffer_from_sample(appsink);
+	sample = gst_app_sink_pull_sample(appsink);
+	buffer = get_buffer_from_sample(sample);
+
+
+	preroll_idx = priv->cap_buffers_num - 1;
 
 	DBG_LOG("pull buffer: %p\n", buffer);
 
@@ -805,42 +856,11 @@ appsink_callback_new_sample(GstAppSink *appsink, gpointer user_data)
 
 	g_mutex_lock(&priv->queue_mutex);
 
-	if (!priv->cap_buffers) {
-		if (!buffer->pool) {
-			fprintf(stderr,
-				"Cannot handle buffers not belonging to "
-				"a bufferpool\n");
-			return GST_FLOW_ERROR;
-		}
-
-		if (priv->sink_pool != buffer->pool) {
-			DBG_LOG("The buffer pool we prepared is not used by "
-				"the pipeline, so replace it with the pool that is "
-				"actually used\n");
-			gst_object_unref(priv->sink_pool);
-			priv->sink_pool = gst_object_ref(buffer->pool);
-		}
-
-		/* Confirm the number of buffers actually set to the buffer pool. */
-		get_buffer_pool_params(priv->sink_pool, NULL, NULL, NULL,
-			       &priv->cap_buffers_num);
-		if (priv->cap_buffers_num == 0) {
-			fprintf(stderr,
-				"Cannot handle the unlimited amount of buffers\n");
-			return GST_FLOW_ERROR;
-		}
-		if (!retrieve_cap_frame_info(priv->sink_pool, buffer,
-				     &priv->cap_pix_fmt)) {
-			fprintf(stderr, "Failed to retrieve frame info on CAPTURE\n");
-			return GST_FLOW_ERROR;
-		}
-		priv->cap_buffers = g_new0(struct v4l_gst_buffer, priv->cap_buffers_num);
-	}
 
 	index = get_v4l2_buffer_index(priv->cap_buffers, priv->confirmed_bufcount,
 			buffer);
 
-	if (index >= priv->cap_buffers_num) {
+	if (index >= preroll_idx) {
 		int j;
 		struct v4l_gst_buffer *buf;
 		if (priv->confirmed_bufcount >= priv->cap_buffers_num) {
@@ -848,6 +868,14 @@ appsink_callback_new_sample(GstAppSink *appsink, gpointer user_data)
 			g_mutex_unlock(&priv->queue_mutex);
 			return GST_FLOW_ERROR;
 		}
+
+		if (buffer == priv->cap_buffers[preroll_idx].buffer) {
+			gst_buffer_unref(buffer);
+			g_cond_signal(&priv->queue_cond);
+			g_mutex_unlock(&priv->queue_mutex);
+			return GST_FLOW_OK;
+		}
+
 		buf = &(priv->cap_buffers[priv->confirmed_bufcount++]);
 		buf->buffer = buffer;
 		buf->state = V4L_GST_BUFFER_READY_FOR_DEQUEUE;
@@ -900,6 +928,7 @@ init_app_elements(struct gst_backend_priv *priv)
 
 	priv->appsink_cb.new_sample = appsink_callback_new_sample;
 	priv->appsink_cb.eos = appsink_callback_eos;
+	priv->appsink_cb.new_preroll = appsink_callback_preroll;
 
 	gst_app_sink_set_callbacks(GST_APP_SINK(priv->appsink),
 				   &priv->appsink_cb, priv, NULL);
@@ -1050,6 +1079,7 @@ gst_backend_deinit(struct v4l_gst_priv *dev_ops_priv)
 
 	if (priv->cap_buffers)
 		g_free(priv->cap_buffers);
+
 
 	gst_object_unref(priv->src_pool);
 	gst_object_unref(priv->sink_pool);
@@ -2115,7 +2145,7 @@ inactivate_pool:
 	return 0;
 }
 
-static GstFlowReturn
+static int
 force_dqbuf_from_pool(GstBufferPool *pool, struct v4l_gst_buffer *buffers,
 		      gint buffers_num, gboolean map)
 {
@@ -2129,36 +2159,34 @@ force_dqbuf_from_pool(GstBufferPool *pool, struct v4l_gst_buffer *buffers,
 	/* force to make buffers available to the V4L2 caller side */
 	flow_ret = gst_buffer_pool_acquire_buffer(pool, &buffer, &params);
 	if (flow_ret != GST_FLOW_OK)
-		return flow_ret;
+		return -1;
 
 	index = get_v4l2_buffer_index(buffers, buffers_num, buffer);
 	if (index >= buffers_num) {
 		fprintf(stderr, "Failed to get a valid buffer index\n");
 		errno = EINVAL;
-		return GST_FLOW_ERROR;
+		return -1;
 	}
 
-	buffers[index].state = V4L_GST_BUFFER_DEQUEUED;
-
 	if (!map)
-		return GST_FLOW_OK;
+		return index;
 
 	if (!gst_buffer_map(buffer, &buffers[index].info,
 			    buffers[index].flags)) {
 		fprintf(stderr, "Failed to map buffer (%p)\n", buffer);
 		errno = EINVAL;
-		return GST_FLOW_ERROR;
+		return -1;
 	}
-	return GST_FLOW_OK;
+	return index;
 }
 
 static int
 force_out_dqbuf(struct gst_backend_priv *priv)
 {
-	g_mutex_lock(&priv->queue_mutex);
-
-	while (force_dqbuf_from_pool(priv->src_pool, priv->out_buffers,
-			 priv->out_buffers_num, true) == GST_FLOW_OK) {
+	int index;
+	while ((index = force_dqbuf_from_pool(priv->src_pool, priv->out_buffers,
+			 priv->out_buffers_num, true)) >= 0) {
+		priv->out_buffers[index].state = V4L_GST_BUFFER_DEQUEUED;
 		priv->returned_out_buffers_num--;
 	}
 
@@ -2175,17 +2203,31 @@ static int
 force_cap_dqbuf(struct gst_backend_priv *priv)
 {
 	GstBuffer *buffer;
+	gint index;
+	gint recommit_index = -1;
 
 	g_mutex_lock(&priv->queue_mutex);
 
 	clear_event(priv->dev_ops_priv->event_state, POLLOUT);
 
-	while (force_dqbuf_from_pool(priv->sink_pool, priv->cap_buffers,
-			 priv->cap_buffers_num, false) == GST_FLOW_OK) {
+	while ((index = force_dqbuf_from_pool(priv->sink_pool, priv->cap_buffers,
+			 priv->cap_buffers_num, false)) >= 0) {
+		if (priv->cap_buffers[index].state == V4L_GST_BUFFER_PREROLLED) {
+			priv->cap_buffers[index].state = V4L_GST_BUFFER_INIT;
+			recommit_index = index;
+		} else {
+			priv->cap_buffers[index].state = V4L_GST_BUFFER_DEQUEUED;
+		}
 	}
 
-	while ((buffer = g_queue_pop_head(priv->cap_buffers_queue)))
-		;
+	if (recommit_index >= 0)
+		gst_buffer_unref(priv->cap_buffers[recommit_index].buffer);
+
+	while ((buffer = g_queue_pop_head(priv->cap_buffers_queue))) {
+		index = get_v4l2_buffer_index(priv->cap_buffers, priv->cap_buffers_num, buffer);
+		if (index < priv->cap_buffers_num)
+			priv->cap_buffers[index].state = V4L_GST_BUFFER_DEQUEUED;
+	}
 
 	g_mutex_unlock(&priv->queue_mutex);
 
@@ -2469,7 +2511,7 @@ reqbuf_ioctl_cap(struct gst_backend_priv *priv,
 
 		g_atomic_int_set(&priv->is_cap_fmt_acquirable, 0);
 
-		for (i = 0; i < priv->cap_buffers_num; i++) {
+		for (i = 0; i < priv->cap_buffers_num - 1; i++) {
 			if (priv->cap_buffers[i].state ==
 			    V4L_GST_BUFFER_DEQUEUED) {
 				gst_buffer_unref(priv->cap_buffers[i].buffer);
@@ -2505,6 +2547,8 @@ reqbuf_ioctl_cap(struct gst_backend_priv *priv,
 	g_mutex_lock(&priv->cap_reqbuf_mutex);
 	priv->cap_buffers_num = MIN(req->count, VIDEO_MAX_FRAME);
 
+	priv->cap_buffers_num++; /*An extra buffer to keep the preroll*/
+
 	g_cond_signal(&priv->cap_reqbuf_cond);
 	g_mutex_unlock(&priv->cap_reqbuf_mutex);
 
@@ -2514,7 +2558,7 @@ reqbuf_ioctl_cap(struct gst_backend_priv *priv,
 		goto unlock;
 	}
 
-	req->count = buffers_num;
+	req->count = buffers_num - 1; /* But don't tell the application about our secret buffer */
 
 	DBG_LOG("buffers count=%d\n", req->count);
 
