@@ -1609,11 +1609,10 @@ qbuf_ioctl_cap(struct gst_backend_priv *priv, struct v4l2_buffer *buf)
 	memset(&buffer->info, 0, sizeof(buffer->info));
 
 	if (buffer->state == V4L_GST_BUFFER_READY_FOR_DEQUEUE) {
-		g_mutex_lock(&priv->queue_mutex);
 		buffer->state = V4L_GST_BUFFER_QUEUED;
 		g_queue_push_tail(priv->cap_buffers_queue, buffer->buffer);
-		if (g_queue_get_length(priv->cap_buffers_queue) == 1)
-			g_cond_signal(&priv->queue_cond);
+		g_mutex_lock(&priv->queue_mutex);
+		g_cond_signal(&priv->queue_cond);
 		g_mutex_unlock(&priv->queue_mutex);
 		return 0;
 	}
