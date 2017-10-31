@@ -106,7 +106,7 @@ struct gst_backend_priv {
 	GMutex cap_reqbuf_mutex;
 	GCond cap_reqbuf_cond;
 
-	int is_cap_fmt_acquirable;
+	gboolean is_cap_fmt_acquirable;
 
 	gboolean is_pipeline_started;
 
@@ -680,7 +680,7 @@ pad_probe_query(GstPad *pad, GstPadProbeInfo *probe_info, gpointer user_data)
 
 		retrieve_cap_format_info(priv, &info);
 
-		g_atomic_int_set(&priv->is_cap_fmt_acquirable, 1);
+		priv->is_cap_fmt_acquirable = TRUE;
 
 		wait_for_cap_reqbuf_invocation(priv);
 
@@ -1221,7 +1221,7 @@ get_fmt_ioctl_cap(struct gst_backend_priv *priv,
 {
 	gint i;
 
-	if (!g_atomic_int_get(&priv->is_cap_fmt_acquirable)) {
+	if (!priv->is_cap_fmt_acquirable) {
 		errno = EINVAL;
 		return -1;
 	}
@@ -1818,7 +1818,7 @@ dqbuf_ioctl_out(struct gst_backend_priv *priv, struct v4l2_buffer *buf)
 	buffer = acquire_buffer_from_pool(priv, priv->src_pool);
 
 #ifdef ENABLE_CHROMIUM_COMPAT
-	if (!g_atomic_int_get(&priv->is_cap_fmt_acquirable)) {
+	if (!priv->is_cap_fmt_acquirable) {
 		if (!priv->pending_buffer) {
 			DBG_LOG("Holding the first acquired buffer "
 				"on OUTPUT\n");
@@ -2452,7 +2452,7 @@ reqbuf_ioctl_cap(struct gst_backend_priv *priv,
 			goto unlock;
 		}
 
-		g_atomic_int_set(&priv->is_cap_fmt_acquirable, 0);
+		priv->is_cap_fmt_acquirable = FALSE;
 
 		for (i = 0; i < priv->cap_buffers_num - 1; i++) {
 			if (priv->cap_buffers[i].state ==
