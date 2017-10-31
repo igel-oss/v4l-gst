@@ -96,7 +96,7 @@ struct gst_backend_priv {
 	GMutex queue_mutex;
 	GCond queue_cond;
 
-	gint returned_out_buffers_num;
+	gint empty_out_buffer_cnt;
 
 #ifdef ENABLE_CHROMIUM_COMPAT
 	GstBuffer *pending_buffer;
@@ -638,24 +638,13 @@ wait_for_cap_reqbuf_invocation(struct gst_backend_priv *priv)
 }
 
 static inline void
-release_out_buffer_unlocked(struct gst_backend_priv *priv, GstBuffer *buffer)
-{
-	DBG_LOG("unref buffer: %p\n", buffer);
-	gst_buffer_unref(buffer);
-
-	set_event(priv->dev_ops_priv->event_state, POLLIN);
-
-	priv->returned_out_buffers_num++;
-}
-
-static inline void
 release_out_buffer(struct gst_backend_priv *priv, GstBuffer *buffer)
 {
-	g_mutex_lock(&priv->queue_mutex);
+	g_atomic_int_inc(&priv->empty_out_buffer_cnt);
+	gst_buffer_unref(buffer);
 
-	release_out_buffer_unlocked(priv, buffer);
-
-	g_mutex_unlock(&priv->queue_mutex);
+	DBG_LOG("unref buffer: %p\n", buffer);
+	set_event(priv->dev_ops_priv->event_state, POLLIN);
 }
 
 static GstPadProbeReturn
@@ -691,32 +680,7 @@ pad_probe_query(GstPad *pad, GstPadProbeInfo *probe_info, gpointer user_data)
 
 		retrieve_cap_format_info(priv, &info);
 
-#ifdef ENABLE_CHROMIUM_COMPAT
-		g_mutex_lock(&priv->queue_mutex);
-		/* Enable the video parameters acquisition
-		   by VIDIOC_G_FMT ioctl on CAPTURE */
 		g_atomic_int_set(&priv->is_cap_fmt_acquirable, 1);
-
-		/* As the initial decoding processing, the application can
-		   continue to queue an input stream until the capture format
-		   has been acquirable. In this case, the buffers queued on
-		   the output type could not be consumed and stay queued
-		   in the GStreame pipeline because the buffers on
-		   the capture type are not prepared yet. That makes
-		   the application wait at the poll forever when using
-		   the non-blocking mode.
-		   To avoid this race condition, the plugin holds one of
-		   the buffers on the output type and will release it
-		   right after the capture format has been acquirable, emitting
-		   POLLIN. */
-		if (priv->pending_buffer) {
-			release_out_buffer_unlocked(priv, priv->pending_buffer);
-			priv->pending_buffer = NULL;
-		}
-		g_mutex_unlock(&priv->queue_mutex);
-#else
-		g_atomic_int_set(&priv->is_cap_fmt_acquirable, 1);
-#endif
 
 		wait_for_cap_reqbuf_invocation(priv);
 
@@ -1540,28 +1504,7 @@ notify_unref(gpointer data)
 
 	priv = buffer->priv;
 
-#ifdef ENABLE_CHROMIUM_COMPAT
-	g_mutex_lock(&priv->queue_mutex);
-
-	/* The buffer held at the following will be released
-	   right after the cap format has been acquirable.
-	   Please see the comment for the detail in
-	   pad_probe_query(). */
-	if (!g_atomic_int_get(&priv->is_cap_fmt_acquirable) &&
-	    !priv->pending_buffer) {
-		DBG_LOG("Holding the first acquired buffer "
-			"on OUTPUT\n");
-		priv->pending_buffer = buffer->buffer;
-		g_mutex_unlock(&priv->queue_mutex);
-		return;
-	}
-
-	release_out_buffer_unlocked(priv, buffer->buffer);
-
-	g_mutex_unlock(&priv->queue_mutex);
-#else
 	release_out_buffer(priv, buffer->buffer);
-#endif
 }
 
 static int
@@ -1817,11 +1760,7 @@ dequeue_buffer(struct gst_backend_priv *priv, GQueue *queue, GCond *cond,
 		buffer = dequeue_blocking(priv, queue, cond);
 
 	if (buffer) {
-		if (type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE &&
-		    priv->returned_out_buffers_num == 0) {
-			clear_event(priv->dev_ops_priv->event_state, POLLIN);
-		} else if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE &&
-			   g_queue_is_empty(priv->cap_buffers_queue)) {
+		if (g_queue_is_empty(priv->cap_buffers_queue)) {
 			clear_event(priv->dev_ops_priv->event_state, POLLOUT);
 		}
 	}
@@ -1838,14 +1777,10 @@ acquire_buffer_from_pool(struct gst_backend_priv *priv, GstBufferPool *pool)
 	GstBuffer *buffer;
 	GstBufferPoolAcquireParams params = { 0, };
 
-	if (priv->dev_ops_priv->is_non_blocking) {
+	if (priv->dev_ops_priv->is_non_blocking)
 		params.flags |= GST_BUFFER_POOL_ACQUIRE_FLAG_DONTWAIT;
-	} else
-		g_mutex_unlock(&priv->queue_mutex);
 
 	flow_ret = gst_buffer_pool_acquire_buffer(pool, &buffer, &params);
-	if (!priv->dev_ops_priv->is_non_blocking)
-		g_mutex_lock(&priv->queue_mutex);
 
 	if (priv->dev_ops_priv->is_non_blocking && flow_ret == GST_FLOW_EOS) {
 		DBG_LOG("The buffer pool is empty in "
@@ -1857,6 +1792,9 @@ acquire_buffer_from_pool(struct gst_backend_priv *priv, GstBufferPool *pool)
 		errno = EINVAL;
 		return NULL;
 	}
+
+	if (g_atomic_int_dec_and_test(&priv->empty_out_buffer_cnt))
+		clear_event(priv->dev_ops_priv->event_state, POLLIN);
 
 	return buffer;
 }
@@ -1877,20 +1815,27 @@ dqbuf_ioctl_out(struct gst_backend_priv *priv, struct v4l2_buffer *buf)
 					priv->src_pool))
 		return -1;
 
-	g_mutex_lock(&priv->queue_mutex);
-
 	buffer = acquire_buffer_from_pool(priv, priv->src_pool);
-	if (!buffer) {
-		g_mutex_unlock(&priv->queue_mutex);
-		return -1;
+
+#ifdef ENABLE_CHROMIUM_COMPAT
+	if (!g_atomic_int_get(&priv->is_cap_fmt_acquirable)) {
+		if (!priv->pending_buffer) {
+			DBG_LOG("Holding the first acquired buffer "
+				"on OUTPUT\n");
+			priv->pending_buffer = buffer;
+			errno = EAGAIN;
+			return -1;
+		}
+	} else {
+		if (!buffer && priv->pending_buffer) {
+			buffer = priv->pending_buffer;
+			priv->pending_buffer = NULL;
+		}
 	}
+#endif
 
-	priv->returned_out_buffers_num--;
-
-	if (priv->returned_out_buffers_num == 0)
-		clear_event(priv->dev_ops_priv->event_state, POLLIN);
-
-	g_mutex_unlock(&priv->queue_mutex);
+	if (!buffer)
+		return -1;
 
 	index = get_v4l2_buffer_index(priv->out_buffers,
 				      priv->out_buffers_num, buffer);
@@ -2187,14 +2132,12 @@ force_out_dqbuf(struct gst_backend_priv *priv)
 	while ((index = force_dqbuf_from_pool(priv->src_pool, priv->out_buffers,
 			 priv->out_buffers_num, true)) >= 0) {
 		priv->out_buffers[index].state = V4L_GST_BUFFER_DEQUEUED;
-		priv->returned_out_buffers_num--;
+		g_atomic_int_dec_and_test(&priv->empty_out_buffer_cnt);
 	}
 
 	clear_event(priv->dev_ops_priv->event_state, POLLIN);
 
-	g_mutex_unlock(&priv->queue_mutex);
-
-	DBG_LOG("returned_out_buffers_num : %d\n", priv->returned_out_buffers_num);
+	DBG_LOG("empty_out_buffer_cnt : %d\n", priv->empty_out_buffer_cnt);
 
 	return 0;
 }
@@ -2415,7 +2358,7 @@ reqbuf_ioctl_out(struct gst_backend_priv *priv,
 
 	DBG_LOG("buffers count=%d\n", req->count);
 
-	priv->returned_out_buffers_num = 0;
+	g_atomic_int_set(&priv->empty_out_buffer_cnt, 0);
 
 	ret = 0;
 
