@@ -87,7 +87,8 @@ struct gst_backend_priv {
 	struct v4l_gst_buffer *out_buffers;
 	gint out_buffers_num;
 	struct v4l_gst_buffer *cap_buffers;
-	gint cap_buffers_num;
+	guint cap_buffers_num;
+	guint cap_buffers_req;
 	gint confirmed_bufcount;
 
 	int64_t mmap_offset;
@@ -632,7 +633,7 @@ static void
 wait_for_cap_reqbuf_invocation(struct gst_backend_priv *priv)
 {
 	g_mutex_lock(&priv->cap_reqbuf_mutex);
-	while (priv->cap_buffers_num <= 0)
+	while (priv->cap_buffers_req == 0)
 		g_cond_wait(&priv->cap_reqbuf_cond, &priv->cap_reqbuf_mutex);
 	g_mutex_unlock(&priv->cap_reqbuf_mutex);
 }
@@ -685,13 +686,13 @@ pad_probe_query(GstPad *pad, GstPadProbeInfo *probe_info, gpointer user_data)
 		wait_for_cap_reqbuf_invocation(priv);
 
 		set_buffer_pool_params(priv->sink_pool, caps, info.size,
-				       priv->cap_buffers_num,
-				       priv->cap_buffers_num);
+				       priv->cap_buffers_req,
+				       priv->cap_buffers_req);
 
 		gst_query_add_allocation_pool(query, priv->sink_pool,
 					      info.size,
-					      priv->cap_buffers_num,
-					      priv->cap_buffers_num);
+					      priv->cap_buffers_req,
+					      priv->cap_buffers_req);
 	}
 
 	return GST_PAD_PROBE_OK;
@@ -2390,36 +2391,27 @@ retrieve_cap_frame_info(GstBufferPool *pool, GstBuffer *buffer,
 	return TRUE;
 }
 
-static guint
-confirm_cap_buffer_count(struct gst_backend_priv *priv)
+static void
+update_cap_buffer_count(struct gst_backend_priv *priv)
 {
-	if (priv->cap_buffers)
-		/* Cannot realloc the buffers without stopping the pipeline,
-		   so return the same number of the buffers so far. */
-		return priv->cap_buffers_num;
-
-
 	g_mutex_unlock(&priv->dev_lock);
 
 	/* Wait for the first buffer to come out of the pipeline to
            check the bufferpool properties */
 	g_mutex_lock(&priv->queue_mutex);
-	while (!priv->cap_buffers)
+	while (priv->cap_buffers_num == 0)
 		g_cond_wait(&priv->queue_cond, &priv->queue_mutex);
 	g_mutex_unlock(&priv->queue_mutex);
 
 	g_mutex_lock(&priv->dev_lock);
 	DBG_LOG("The number of buffers actually set to the buffer pool is %d\n",
 		priv->cap_buffers_num);
-
-	return priv->cap_buffers_num;
 }
 
 static int
 reqbuf_ioctl_cap(struct gst_backend_priv *priv,
 		 struct v4l2_requestbuffers *req)
 {
-	guint buffers_num;
 	GstStateChangeReturn state_ret;
 	int ret;
 	gint i;
@@ -2472,6 +2464,7 @@ reqbuf_ioctl_cap(struct gst_backend_priv *priv,
 			g_free(priv->cap_buffers);
 			priv->cap_buffers = NULL;
 		}
+		priv->cap_buffers_num = 0;
 		init_decoded_frame_params(&priv->cap_pix_fmt);
 
 		ret = 0;
@@ -2486,22 +2479,30 @@ reqbuf_ioctl_cap(struct gst_backend_priv *priv,
 		ret = -1;
 		goto unlock;
 	}
+	if (priv->cap_buffers_num) {
+		req->count = priv->cap_buffers_num - 1;
+		ret = 0;
+		goto unlock;
+	}
 
 	g_mutex_lock(&priv->cap_reqbuf_mutex);
-	priv->cap_buffers_num = MIN(req->count, VIDEO_MAX_FRAME);
 
-	priv->cap_buffers_num++; /*An extra buffer to keep the preroll*/
+	priv->cap_buffers_req = MIN(req->count, VIDEO_MAX_FRAME);
+	priv->cap_buffers_req++; /*An extra buffer to keep the preroll*/
 
 	g_cond_signal(&priv->cap_reqbuf_cond);
 	g_mutex_unlock(&priv->cap_reqbuf_mutex);
 
-	buffers_num = confirm_cap_buffer_count(priv);
-	if (buffers_num == 0) {
+	update_cap_buffer_count(priv);
+
+	priv->cap_buffers_req = 0;
+
+	if (priv->cap_buffers_num == 0) {
 		ret = -1;
 		goto unlock;
 	}
 
-	req->count = buffers_num - 1; /* But don't tell the application about our secret buffer */
+	req->count = priv->cap_buffers_num - 1; /* But don't tell the application about our secret buffer */
 
 	DBG_LOG("buffers count=%d\n", req->count);
 
