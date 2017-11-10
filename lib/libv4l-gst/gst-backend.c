@@ -2946,7 +2946,7 @@ int expbuf_ioctl(struct v4l_gst_priv *dev_ops_priv,
 		mem = gst_buffer_peek_memory(buffer->buffer, i);
 		if (!gst_is_dmabuf_memory(mem))
 			continue;
-		expbuf->fd = gst_dmabuf_memory_get_fd (mem);
+		expbuf->fd = dup(gst_dmabuf_memory_get_fd (mem));
 		return 0;
 	}
 	return -1;
