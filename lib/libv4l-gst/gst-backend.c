@@ -2872,7 +2872,7 @@ int expbuf_ioctl(struct v4l_gst_priv *dev_ops_priv,
 			plane++;
 			continue;
 		}
-		expbuf->fd = gst_dmabuf_memory_get_fd (mem);
+		expbuf->fd = dup(gst_dmabuf_memory_get_fd (mem));
 		return 0;
 	}
 	return -1;
