@@ -46,6 +46,7 @@ struct v4l_gst_buffer {
 	GstMapInfo info;
 	GstMapFlags flags;
 
+	int n_planes;
 	struct v4l2_plane planes[GST_VIDEO_MAX_PLANES];
 
 	struct gst_backend_priv *priv;
@@ -827,6 +828,7 @@ appsink_callback_new_sample(GstAppSink *appsink, gpointer user_data)
 
 	if (index >= preroll_idx) {
 		int j;
+		GstVideoMeta *vmeta = NULL;
 		struct v4l_gst_buffer *buf;
 		if (priv->confirmed_bufcount >= priv->cap_buffers_num) {
 			fprintf(stderr, "Unknown buffer received from pipline\n");
@@ -843,6 +845,12 @@ appsink_callback_new_sample(GstAppSink *appsink, gpointer user_data)
 
 		buf = &(priv->cap_buffers[priv->confirmed_bufcount++]);
 		buf->buffer = buffer;
+		vmeta = gst_buffer_get_video_meta(buffer);
+		if (vmeta)
+			buf->n_planes = vmeta->n_planes;
+		else
+			buf->n_planes = 1;
+
 		buf->state = V4L_GST_BUFFER_READY_FOR_DEQUEUE;
 		for (j = 0; j < priv->cap_pix_fmt.num_planes; j++) {
 			buf->planes[j].length =
@@ -1447,7 +1455,6 @@ static gboolean
 check_no_index_v4l2_buffer(struct v4l2_buffer *buf,
 			   struct v4l_gst_buffer *buffers, GstBufferPool *pool)
 {
-	GstVideoMeta *meta;
 	guint n_planes;
 
 	if (!is_supported_memory_io(buf->memory))
@@ -1466,11 +1473,7 @@ check_no_index_v4l2_buffer(struct v4l2_buffer *buf,
 		return FALSE;
 	}
 
-	if (get_raw_video_params(pool, buffers[buf->index].buffer, NULL,
-				 &meta))
-		n_planes = meta->n_planes;
-	else
-		n_planes = 1;
+	n_planes = buffers[buf->index].n_planes;
 
 	if (buf->length < n_planes || buf->length > VIDEO_MAX_PLANES) {
 		fprintf(stderr, "Incorrect planes array length\n");
@@ -1695,12 +1698,9 @@ fill_v4l2_buffer(struct gst_backend_priv *priv, GstBufferPool *pool,
 		 guint bytesused[], struct timeval *timestamp,
 		 struct v4l2_buffer *buf)
 {
-	GstVideoMeta *meta = NULL;
 	guint n_planes;
 
-	get_raw_video_params(pool, buffers[buf->index].buffer, NULL, &meta);
-
-	n_planes = (meta) ? meta->n_planes : 1;
+	n_planes = buffers[buf->index].n_planes;
 
 	set_v4l2_buffer_plane_params(priv, buffers, n_planes, bytesused,
 				     timestamp, buf);
@@ -2066,6 +2066,7 @@ alloc_buffers_from_pool(struct gst_backend_priv *priv, GstBufferPool *pool,
 
 		bufs_list[i].priv = priv;
 		bufs_list[i].state = V4L_GST_BUFFER_DEQUEUED;
+		bufs_list[i].n_planes = 1;
 
 		DBG_LOG("out gst_buffer[%d] : %p\n", i, bufs_list[i].buffer);
 	}
