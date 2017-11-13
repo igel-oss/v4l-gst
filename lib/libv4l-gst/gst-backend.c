@@ -704,7 +704,7 @@ setup_query_pad_probe(struct gst_backend_priv *priv)
 	GstPad *peer_pad;
 	gulong probe_id;
 
-	peer_pad = get_peer_pad(priv->appsink, "sink");
+	peer_pad = gst_element_get_static_pad(priv->appsink, "sink");
 	probe_id = gst_pad_add_probe(peer_pad,
 				     GST_PAD_PROBE_TYPE_QUERY_DOWNSTREAM,
 				     (GstPadProbeCallback) pad_probe_query,
@@ -1024,7 +1024,7 @@ remove_query_pad_probe(GstElement *appsink, gulong probe_id)
 {
 	GstPad *peer_pad;
 
-	peer_pad = get_peer_pad(appsink, "sink");
+	peer_pad = gst_element_get_static_pad(appsink, "sink");
 	gst_pad_remove_probe(peer_pad, probe_id);
 	gst_object_unref(peer_pad);
 }
