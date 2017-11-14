@@ -664,12 +664,12 @@ pad_probe_query(GstPad *pad, GstPadProbeInfo *probe_info, gpointer user_data)
 		gst_query_parse_allocation(query, &caps, NULL);
 		if (!caps) {
 			fprintf(stderr, "No caps in query\n");
-			return GST_PAD_PROBE_OK;
+			return GST_PAD_PROBE_HANDLED;
 		}
 
 		if (!gst_video_info_from_caps(&info, caps)) {
 			fprintf(stderr, "Failed to get video info\n");
-			return GST_PAD_PROBE_OK;
+			return GST_PAD_PROBE_HANDLED;
 		}
 
 		/* Workaround: gst-omx arouses caps negotiations toward
@@ -694,6 +694,7 @@ pad_probe_query(GstPad *pad, GstPadProbeInfo *probe_info, gpointer user_data)
 					      info.size,
 					      priv->cap_buffers_req,
 					      priv->cap_buffers_req);
+		return GST_PAD_PROBE_HANDLED;
 	}
 
 	return GST_PAD_PROBE_OK;
