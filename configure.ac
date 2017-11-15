@@ -41,18 +41,6 @@ AC_SUBST([libv4l2plugindir], [$libdir/$with_libv4l2subdir/plugins])
 
 AC_DEFINE_DIR([LIBV4L2_PLUGIN_DIR], [libv4l2plugindir], [libv4l2 plugin directory])
 
-AC_ARG_ENABLE([chromium-compatibility],
-	[AS_HELP_STRING([--enable-chromium-compatibility],
-			[Enable the specific operation to link with the Chromium V4L2 VDA])],
-	[],
-	[enable_chromium_compatibility=no]
-)
-
-if test "x${enable_chromium_compatibility}" = "xyes"; then
-	AC_DEFINE(ENABLE_CHROMIUM_COMPAT, 1,
-		[Define if the specific operation to link with the Chromium V4L2 VDA is enabled])
-fi
-
 CPPFLAGS="-I\$(top_srcdir)/lib/include -Wall -Wpointer-arith $CPPFLAGS"
 
 AC_OUTPUT

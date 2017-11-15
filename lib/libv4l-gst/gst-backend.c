@@ -100,9 +100,6 @@ struct gst_backend_priv {
 
 	gint empty_out_buffer_cnt;
 
-#ifdef ENABLE_CHROMIUM_COMPAT
-	GstBuffer *pending_buffer;
-#endif
 	gulong probe_id;
 
 	GMutex cap_reqbuf_mutex;
@@ -1079,10 +1076,6 @@ int
 querycap_ioctl(struct v4l_gst_priv *dev_ops_priv, struct v4l2_capability *cap)
 {
 	cap->device_caps = V4L2_CAP_VIDEO_M2M_MPLANE
-#ifdef ENABLE_CHROMIUM_COMPAT
-			| V4L2_CAP_VIDEO_CAPTURE_MPLANE
-			| V4L2_CAP_VIDEO_OUTPUT_MPLANE
-#endif
 			| V4L2_CAP_EXT_PIX_FORMAT
 			| V4L2_CAP_STREAMING;
 
@@ -1824,23 +1817,6 @@ dqbuf_ioctl_out(struct gst_backend_priv *priv, struct v4l2_buffer *buf)
 		return -1;
 
 	buffer = acquire_buffer_from_pool(priv, priv->src_pool);
-
-#ifdef ENABLE_CHROMIUM_COMPAT
-	if (!priv->is_cap_fmt_acquirable) {
-		if (!priv->pending_buffer) {
-			DBG_LOG("Holding the first acquired buffer "
-				"on OUTPUT\n");
-			priv->pending_buffer = buffer;
-			errno = EAGAIN;
-			return -1;
-		}
-	} else {
-		if (!buffer && priv->pending_buffer) {
-			buffer = priv->pending_buffer;
-			priv->pending_buffer = NULL;
-		}
-	}
-#endif
 
 	if (!buffer)
 		return -1;
