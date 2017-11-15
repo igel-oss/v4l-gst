@@ -1516,7 +1516,7 @@ static int
 qbuf_ioctl_out(struct gst_backend_priv *priv, struct v4l2_buffer *buf)
 {
 	GstFlowReturn flow_ret;
-	GstBuffer *wrapped_buffer;
+	GstBuffer *decode_buffer;
 	GstMapInfo info;
 	struct v4l_gst_buffer *buffer;
 
@@ -1555,32 +1555,39 @@ qbuf_ioctl_out(struct gst_backend_priv *priv, struct v4l2_buffer *buf)
 	gst_buffer_unmap(buffer->buffer, &buffer->info);
 	memset(&buffer->info, 0, sizeof(buffer->info));
 
-	/* Rewrap an input buffer with the just size of bytesused
-	   because it will be regarded as having data filled to the entire
-	   buffer size internally in the GStreame pipeline.
-	   Also set the destructor (notify_unref()). */
+	/* copy input buffers until after reqbufs is called. */
+	/* While the pipeline is stalled waiting for reqbufs, the input buffers should */
+	/* continue to be accepted, so copy the contents and return them to the */
+	/* client immediately */
+	if (!priv->cap_buffers_num ||
+			priv->cap_buffers[priv->cap_buffers_num -1].state != V4L_GST_BUFFER_PREROLLED) {
+		decode_buffer = gst_buffer_copy_region(buffer->buffer,
+			GST_BUFFER_COPY_ALL | GST_BUFFER_COPY_DEEP, 0,
+			buf->m.planes[0].bytesused);
+		release_out_buffer(priv, buffer->buffer);
+	} else {
+		if (!gst_buffer_map(buffer->buffer, &info, GST_MAP_READ)) {
+			fprintf(stderr, "Failed to map buffer (%p)\n", buffer->buffer);
+			errno = EINVAL;
+			return -1;
+		}
 
-	if (!gst_buffer_map(buffer->buffer, &info, GST_MAP_READ)) {
-		fprintf(stderr, "Failed to map buffer (%p)\n", buffer->buffer);
-		errno = EINVAL;
-		return -1;
-	}
-
-	wrapped_buffer = gst_buffer_new_wrapped_full(
+		decode_buffer = gst_buffer_new_wrapped_full(
 					GST_MEMORY_FLAG_READONLY, info.data,
 					buf->m.planes[0].bytesused, 0,
 					buf->m.planes[0].bytesused,
 					buffer, notify_unref);
 
-	gst_buffer_unmap(buffer->buffer, &info);
+		gst_buffer_unmap(buffer->buffer, &info);
+	}
 
 	DBG_LOG("buffer rewrap ts=%ld\n", buf->timestamp.tv_sec);
-	GST_BUFFER_PTS(wrapped_buffer) = GST_TIMEVAL_TO_TIME(buf->timestamp);
+	GST_BUFFER_PTS(decode_buffer) = GST_TIMEVAL_TO_TIME(buf->timestamp);
 
 	buffer->state = V4L_GST_BUFFER_QUEUED;
 
 	flow_ret = gst_app_src_push_buffer(
-			GST_APP_SRC(priv->appsrc), wrapped_buffer);
+			GST_APP_SRC(priv->appsrc), decode_buffer);
 	if (flow_ret != GST_FLOW_OK) {
 		fprintf(stderr,
 			"Failed to push a buffer to the pipeline on OUTPUT"
