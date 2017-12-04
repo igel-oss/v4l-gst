@@ -12,6 +12,7 @@ AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_FILES([Makefile
 	lib/Makefile
 	lib/libv4l-gst/Makefile
+        test/Makefile
 ])
 
 AC_GNU_SOURCE
