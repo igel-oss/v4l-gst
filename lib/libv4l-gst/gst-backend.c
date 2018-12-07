@@ -32,6 +32,7 @@
 #include "debug.h"
 
 #define DEF_CAP_MIN_BUFFERS		2
+#define INPUT_BUFFERING_CNT		16 // must be <= than VIDEO_MAX_FRAME
 
 enum buffer_state {
 	V4L_GST_BUFFER_QUEUED,
@@ -114,6 +115,8 @@ struct gst_backend_priv {
 
 	gint max_width;
 	gint max_height;
+
+        gint out_cnt;
 };
 
 struct v4l_gst_format_info {
@@ -712,6 +715,7 @@ pad_probe_query(GstPad *pad, GstPadProbeInfo *probe_info, gpointer user_data)
 		g_atomic_int_set(&priv->is_cap_fmt_acquirable, 1);
 #endif
 
+	        set_event(priv->dev_ops_priv->event_state, POLLOUT);
 		wait_for_cap_reqbuf_invocation(priv);
 
 		set_buffer_pool_params(priv->sink_pool, caps, info.size,
@@ -1148,12 +1152,13 @@ get_fmt_ioctl_cap(struct gst_backend_priv *priv,
 {
 	gint i;
 
-	if (!g_atomic_int_get(&priv->is_cap_fmt_acquirable)) {
+	if (!g_atomic_int_get(&priv->is_cap_fmt_acquirable) ||
+        	    priv->out_cnt < INPUT_BUFFERING_CNT) {
 		errno = EINVAL;
 		return -1;
 	}
 
-	DBG_LOG("cap format is acquirable\n");
+	DBG_LOG("cap format is acquirable. out_cnt = %d \n",priv->out_cnt);
 
 	pix_fmt->width = priv->cap_pix_fmt.width;
 	pix_fmt->height = priv->cap_pix_fmt.height;
@@ -1531,6 +1536,9 @@ qbuf_ioctl_out(struct gst_backend_priv *priv, struct v4l2_buffer *buf)
 		errno = EINVAL;
 		return -1;
 	}
+
+        if (priv->out_cnt < INPUT_BUFFERING_CNT)
+            priv->out_cnt++;
 
 	return 0;
 }
@@ -2319,7 +2327,8 @@ reqbuf_ioctl_out(struct gst_backend_priv *priv,
 		goto unlock;
 	}
 
-	adjusted_count = MIN(req->count, VIDEO_MAX_FRAME);
+	adjusted_count = MAX(req->count, INPUT_BUFFERING_CNT);
+	adjusted_count = MIN(adjusted_count, VIDEO_MAX_FRAME);
 
 	set_buffer_pool_params(priv->src_pool, caps,
 			       priv->out_buf_size, adjusted_count,
