@@ -97,9 +97,6 @@ struct gst_backend_priv {
 
 	gint returned_out_buffers_num;
 
-#ifdef ENABLE_CHROMIUM_COMPAT
-	GstBuffer *pending_buffer;
-#endif
 	gulong probe_id;
 
 	GMutex cap_reqbuf_mutex;
@@ -688,32 +685,7 @@ pad_probe_query(GstPad *pad, GstPadProbeInfo *probe_info, gpointer user_data)
 
 		retrieve_cap_format_info(priv, &info);
 
-#ifdef ENABLE_CHROMIUM_COMPAT
-		g_mutex_lock(&priv->queue_mutex);
-		/* Enable the video parameters acquisition
-		   by VIDIOC_G_FMT ioctl on CAPTURE */
 		g_atomic_int_set(&priv->is_cap_fmt_acquirable, 1);
-
-		/* As the initial decoding processing, the application can
-		   continue to queue an input stream until the capture format
-		   has been acquirable. In this case, the buffers queued on
-		   the output type could not be consumed and stay queued
-		   in the GStreame pipeline because the buffers on
-		   the capture type are not prepared yet. That makes
-		   the application wait at the poll forever when using
-		   the non-blocking mode.
-		   To avoid this race condition, the plugin holds one of
-		   the buffers on the output type and will release it
-		   right after the capture format has been acquirable, emitting
-		   POLLIN. */
-		if (priv->pending_buffer) {
-			release_out_buffer_unlocked(priv, priv->pending_buffer);
-			priv->pending_buffer = NULL;
-		}
-		g_mutex_unlock(&priv->queue_mutex);
-#else
-		g_atomic_int_set(&priv->is_cap_fmt_acquirable, 1);
-#endif
 
 	        set_event(priv->dev_ops_priv->event_state, POLLOUT);
 		wait_for_cap_reqbuf_invocation(priv);
@@ -1436,28 +1408,7 @@ notify_unref(gpointer data)
 
 	priv = buffer->priv;
 
-#ifdef ENABLE_CHROMIUM_COMPAT
-	g_mutex_lock(&priv->queue_mutex);
-
-	/* The buffer held at the following will be released
-	   right after the cap format has been acquirable.
-	   Please see the comment for the detail in
-	   pad_probe_query(). */
-	if (!g_atomic_int_get(&priv->is_cap_fmt_acquirable) &&
-	    !priv->pending_buffer) {
-		DBG_LOG("Holding the first acquired buffer "
-			"on OUTPUT\n");
-		priv->pending_buffer = buffer->buffer;
-		g_mutex_unlock(&priv->queue_mutex);
-		return;
-	}
-
-	release_out_buffer_unlocked(priv, buffer->buffer);
-
-	g_mutex_unlock(&priv->queue_mutex);
-#else
 	release_out_buffer(priv, buffer->buffer);
-#endif
 }
 
 static int
