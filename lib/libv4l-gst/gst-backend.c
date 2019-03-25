@@ -2890,7 +2890,7 @@ gst_backend_mmap(struct v4l_gst_priv *dev_ops_priv, void *start, size_t length,
 unlock:
 	g_mutex_unlock(&priv->dev_lock);
 
-	DBG_LOG("Final map = %x\n", map);
+	DBG_LOG("Final map = %p\n", map);
 
 	return map;
 }
