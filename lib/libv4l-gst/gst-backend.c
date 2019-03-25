@@ -493,13 +493,15 @@ get_supported_video_format_cap(GstElement *appsink, struct fmts **cap_fmts,
 {
 	GstCaps *caps;
 	GstStructure *structure;
+	guint structs;
 	const GValue *val, *list_val;
 	const gchar *fmt_str;
 	GstVideoFormat fmt;
 	guint fourcc;
 	gint list_size;
 	gint fmts_num;
-	guint i;
+	guint i, j;
+	struct fmts *color_fmts = NULL;
 
 	caps = get_peer_pad_template_caps(appsink, "sink");
 
@@ -510,55 +512,68 @@ get_supported_video_format_cap(GstElement *appsink, struct fmts **cap_fmts,
 				("video/x-raw, format=" GST_VIDEO_FORMATS_ALL);
 	}
 
-	structure = gst_caps_get_structure(caps, 0);
-	val = gst_structure_get_value(structure, "format");
-	if (!val) {
+	structs = gst_caps_get_size(caps);
+	list_size = 2; // Add space for legacy RGB formats if available */
+	fmts_num = 0;
+
+	for (j = 0; j < structs; j++) {
+		structure = gst_caps_get_structure(caps, j);
+		val = gst_structure_get_value(structure, "format");
+		if (!val)
+			continue;
+
+		list_size += gst_value_list_get_size(val);
+		color_fmts = g_renew(struct fmts, color_fmts, list_size);
+
+		for (i = 0; i < list_size; i++) {
+			list_val = gst_value_list_get_value(val, i);
+			fmt_str = g_value_get_string(list_val);
+
+			fmt = gst_video_format_from_string(fmt_str);
+			if (fmt == GST_VIDEO_FORMAT_UNKNOWN) {
+				fprintf(stderr, "Unknown video format : %s\n", fmt_str);
+				continue;
+			}
+
+			fourcc = convert_video_format_gst_to_v4l2(fmt);
+			if (fourcc == 0) {
+				DBG_LOG("Failed to convert video format "
+					"from gst to v4l2 : %s\n", fmt_str);
+				continue;
+			}
+
+			DBG_LOG("cap supported video format : %s\n", fmt_str);
+
+			color_fmts[fmts_num].fmt = fourcc;
+			g_strlcpy(color_fmts[fmts_num++].fmt_char, fmt_str,
+				FMTDESC_NAME_LENGTH);
+
+			/* Add legacy RGB formats */
+			if (fourcc == V4L2_PIX_FMT_ARGB32) {
+				color_fmts[fmts_num].fmt = V4L2_PIX_FMT_RGB32;
+				g_strlcpy(color_fmts[fmts_num++].fmt_char,
+					fmt_str, FMTDESC_NAME_LENGTH);
+			} else if (fourcc == V4L2_PIX_FMT_ABGR32) {
+				color_fmts[fmts_num].fmt = V4L2_PIX_FMT_BGR32;
+				g_strlcpy(color_fmts[fmts_num++].fmt_char,
+					fmt_str, FMTDESC_NAME_LENGTH);
+			}
+		}
+	}
+
+	gst_caps_unref(caps);
+
+	if (fmts_num == 0) {
 		fprintf(stderr, "Failed to get video formats from caps\n");
-		gst_caps_unref(caps);
 		return FALSE;
 	}
 
-	list_size = gst_value_list_get_size(val);
-	*cap_fmts = g_new0(struct fmts, list_size + 2);
-
-	for (i = 0, fmts_num = 0; i < list_size; i++) {
-		list_val = gst_value_list_get_value(val, i);
-		fmt_str = g_value_get_string(list_val);
-
-		fmt = gst_video_format_from_string(fmt_str);
-		if (fmt == GST_VIDEO_FORMAT_UNKNOWN) {
-			fprintf(stderr, "Unknown video format : %s\n", fmt_str);
-			continue;
-		}
-
-		fourcc = convert_video_format_gst_to_v4l2(fmt);
-		if (fourcc == 0) {
-			DBG_LOG("Failed to convert video format "
-				"from gst to v4l2 : %s\n", fmt_str);
-			continue;
-		}
-
-		DBG_LOG("cap supported video format : %s\n", fmt_str);
-
-		(*cap_fmts)[fmts_num].fmt = fourcc;
-		g_strlcpy((*cap_fmts)[fmts_num++].fmt_char, fmt_str, FMTDESC_NAME_LENGTH);
-
-		/* Add legacy RGB formats */
-		if (fourcc == V4L2_PIX_FMT_ARGB32) {
-			(*cap_fmts)[fmts_num].fmt = V4L2_PIX_FMT_RGB32;
-		        g_strlcpy((*cap_fmts)[fmts_num++].fmt_char, fmt_str, FMTDESC_NAME_LENGTH);
-		} else if (fourcc == V4L2_PIX_FMT_ABGR32) {
-			(*cap_fmts)[fmts_num].fmt = V4L2_PIX_FMT_BGR32;
-		        g_strlcpy((*cap_fmts)[fmts_num++].fmt_char, fmt_str, FMTDESC_NAME_LENGTH);
-		}
-	}
-
 	*cap_fmts_num = fmts_num;
+	*cap_fmts = color_fmts;
 
 	DBG_LOG("The total number of cap supported video format : %d\n",
 		*cap_fmts_num);
 
-	gst_caps_unref(caps);
 
 	return TRUE;
 }
