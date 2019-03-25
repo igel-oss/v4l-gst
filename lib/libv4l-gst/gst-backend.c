@@ -34,6 +34,8 @@
 #define DEF_CAP_MIN_BUFFERS		2
 #define INPUT_BUFFERING_CNT		16 // must be <= than VIDEO_MAX_FRAME
 
+#define FMTDESC_NAME_LENGTH		32  //The same size as defined int the V4L2 spec
+
 enum buffer_state {
 	V4L_GST_BUFFER_QUEUED,
 	V4L_GST_BUFFER_DEQUEUED,
@@ -53,7 +55,7 @@ struct v4l_gst_buffer {
 
 struct fmts {
         guint fmt;
-        gchar *fmt_char;
+        gchar fmt_char[FMTDESC_NAME_LENGTH];
 };
 
 struct gst_backend_priv {
@@ -450,8 +452,8 @@ get_supported_video_format_out(GstElement *appsrc, struct fmts **out_fmts,
 
 		(*out_fmts)[0].fmt = V4L2_PIX_FMT_H264;
 		(*out_fmts)[1].fmt = V4L2_PIX_FMT_VP8;
-		(*out_fmts)[0].fmt_char = g_strdup("V4L2_PIX_FMT_H264");
-		(*out_fmts)[1].fmt_char = g_strdup("V4L2_PIX_FMT_VP8");
+		g_strlcpy((*out_fmts)[0].fmt_char, "V4L2_PIX_FMT_H264", FMTDESC_NAME_LENGTH);
+		g_strlcpy((*out_fmts)[1].fmt_char, "V4L2_PIX_FMT_VP8", FMTDESC_NAME_LENGTH);
 
 		DBG_LOG("out supported codecs : h264, vp8\n");
 	} else {
@@ -475,9 +477,9 @@ get_supported_video_format_out(GstElement *appsrc, struct fmts **out_fmts,
 
 		(*out_fmts)[0].fmt = fourcc;
 		if(fourcc == V4L2_PIX_FMT_H264)
-			(*out_fmts)[0].fmt_char = g_strdup("V4L2_PIX_FMT_H264");
+			g_strlcpy((*out_fmts)[0].fmt_char, "V4L2_PIX_FMT_H264", FMTDESC_NAME_LENGTH);
 		else
-			(*out_fmts)[0].fmt_char = g_strdup("V4L2_PIX_FMT_VP8");
+			g_strlcpy((*out_fmts)[0].fmt_char, "V4L2_PIX_FMT_VP8", FMTDESC_NAME_LENGTH);
 	}
 
 	gst_caps_unref(caps);
@@ -539,15 +541,15 @@ get_supported_video_format_cap(GstElement *appsink, struct fmts **cap_fmts,
 		DBG_LOG("cap supported video format : %s\n", fmt_str);
 
 		(*cap_fmts)[fmts_num].fmt = fourcc;
-		(*cap_fmts)[fmts_num++].fmt_char = g_strdup(fmt_str);
+		g_strlcpy((*cap_fmts)[fmts_num++].fmt_char, fmt_str, FMTDESC_NAME_LENGTH);
 
 		/* Add legacy RGB formats */
 		if (fourcc == V4L2_PIX_FMT_ARGB32) {
 			(*cap_fmts)[fmts_num].fmt = V4L2_PIX_FMT_RGB32;
-			(*cap_fmts)[fmts_num++].fmt_char = g_strdup(fmt_str);
+		        g_strlcpy((*cap_fmts)[fmts_num++].fmt_char, fmt_str, FMTDESC_NAME_LENGTH);
 		} else if (fourcc == V4L2_PIX_FMT_ABGR32) {
 			(*cap_fmts)[fmts_num].fmt = V4L2_PIX_FMT_BGR32;
-			(*cap_fmts)[fmts_num++].fmt_char = g_strdup(fmt_str);
+		        g_strlcpy((*cap_fmts)[fmts_num++].fmt_char, fmt_str, FMTDESC_NAME_LENGTH);
 		}
 	}
 
@@ -782,7 +784,6 @@ init_app_elements(struct gst_backend_priv *priv)
 	gint out_fmts_num;
 	struct fmts *cap_fmts;
 	gint cap_fmts_num;
-	guint i;
 
 	/* Get appsrc and appsink elements respectively from the pipeline */
 	if (!get_app_elements(priv->pipeline, &priv->appsrc, &priv->appsink))
@@ -809,8 +810,6 @@ init_app_elements(struct gst_backend_priv *priv)
 		return FALSE;
 	if (!get_supported_video_format_cap(priv->appsink, &cap_fmts,
 					    &cap_fmts_num)) {
-		for(i = 0; i < out_fmts_num; i++)
-                        g_free(out_fmts[i].fmt_char);
 		g_free(out_fmts);
 		return FALSE;
 	}
@@ -862,7 +861,6 @@ gst_backend_init(struct v4l_gst_priv *dev_ops_priv)
 	struct gst_backend_priv *priv;
 	gchar *pipeline_str = NULL;
 	gchar *pool_lib_path = NULL;
-	guint i;
 
 	priv = calloc(1, sizeof(*priv));
 	if (!priv) {
@@ -905,11 +903,7 @@ free_app_elems_init_objs:
 	g_mutex_clear(&priv->queue_mutex);
 	g_cond_clear(&priv->queue_cond);
 
-	for(i = 0; i < priv->out_fmts_num; i++)
-                g_free(priv->out_fmts[i].fmt_char);
 	g_free(priv->out_fmts);
-	for(i = 0; i < priv->cap_fmts_num; i++)
-                g_free(priv->cap_fmts[i].fmt_char);
 	g_free(priv->cap_fmts);
 free_pipeline:
 	gst_object_unref(priv->pipeline);
@@ -935,7 +929,6 @@ void
 gst_backend_deinit(struct v4l_gst_priv *dev_ops_priv)
 {
 	struct gst_backend_priv *priv = dev_ops_priv->gst_priv;
-	guint i;
 
 	g_mutex_clear(&priv->dev_lock);
 
@@ -950,11 +943,7 @@ gst_backend_deinit(struct v4l_gst_priv *dev_ops_priv)
 	gst_object_unref(priv->src_pool);
 	gst_object_unref(priv->sink_pool);
 
-	for(i = 0; i < priv->out_fmts_num; i++)
-                g_free(priv->out_fmts[i].fmt_char);
 	g_free(priv->out_fmts);
-	for(i = 0; i < priv->cap_fmts_num; i++)
-                g_free(priv->cap_fmts[i].fmt_char);
 	g_free(priv->cap_fmts);
 
 	g_queue_free(priv->cap_buffers_queue);
