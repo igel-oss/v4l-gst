@@ -517,15 +517,17 @@ get_supported_video_format_cap(GstElement *appsink, struct fmts **cap_fmts,
 	fmts_num = 0;
 
 	for (j = 0; j < structs; j++) {
+	        gint num_cap_formats;
 		structure = gst_caps_get_structure(caps, j);
 		val = gst_structure_get_value(structure, "format");
 		if (!val)
 			continue;
 
-		list_size += gst_value_list_get_size(val);
+		num_cap_formats = gst_value_list_get_size(val);
+		list_size += num_cap_formats;
 		color_fmts = g_renew(struct fmts, color_fmts, list_size);
 
-		for (i = 0; i < list_size; i++) {
+		for (i = 0; i < num_cap_formats; i++) {
 			list_val = gst_value_list_get_value(val, i);
 			fmt_str = g_value_get_string(list_val);
 
